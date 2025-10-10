@@ -1,0 +1,557 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+// 🎛️ Conference Room — Single Polished Version
+// React + Tailwind + Firebase (Auth/Firestore) realtime sync
+// 4-up web viewer with Control Panel layout, minimizable panels, Safe Mode iframes,
+// shared Comment Center (AI assist via server proxy), shareable room link, presence,
+// lock/unlock room, presets, debounced state saves.
+//
+// ⚠️ This front-end EXPECTS the Cloud Functions in the section "BACKEND — Cloud Functions"
+//    (aiProxy, joinRoom, kickMember, cleanPresence) and Firestore Rules + CSP headers below.
+//
+// ───────────────────────────────────────────────────────────────────────────────
+// QUICK START
+// 1) Create Firebase project, enable Auth (Anonymous or Email/Password) + Firestore
+// 2) Paste your Firebase config to FIREBASE_CONFIG
+// 3) Deploy the Cloud Functions from the section at bottom (or remove AI assist)
+// 4) Firestore Rules: use the rule set at bottom
+// 5) (Optional) Hosting headers (CSP) from bottom
+// 6) Run app → open /?room=zq-demo and share the link
+// ───────────────────────────────────────────────────────────────────────────────
+
+// Firebase (client)
+import { initializeApp, getApps } from "firebase/app";
+import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot,
+  serverTimestamp, collection, addDoc, query, orderBy, limit, runTransaction, Timestamp
+} from "firebase/firestore";
+
+// Fill these from Firebase Console → Project Settings → SDK setup
+const FIREBASE_CONFIG = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID",
+};
+
+// API endpoints (Cloud Functions — set your region/paths)
+const CF_JOIN_URL = "/joinRoom";     // HTTPS function path (e.g., on Firebase Hosting rewrite)
+const CF_KICK_URL = "/kickMember";   // kick endpoint
+const CF_AI_PROXY = "/aiProxy";      // AI proxy endpoint
+
+export default function ConferenceRoomPolished() {
+  // ── Room + share link
+  const roomId = useMemo(() => new URLSearchParams(window.location.search).get("room") || "demo", []);
+  const shareUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
+
+  // ── UI toggles & constants
+  const [showComments, setShowComments] = useState(true);
+  const [safeMode, setSafeMode] = useState(true); // sandbox iframes by default
+  const MAX_MEMBERS = 4;
+
+  // Some big sites block iframes
+  const KNOWN_BLOCKED = useMemo(
+    () => [/(^|\.)google\.com$/i,/(^|\.)gemini\.google\.com$/i,/(^|\.)chatgpt\.com$/i,/(^|\.)openai\.com$/i,/(^|\.)chat\.openai\.com$/i,/(^|\.)bing\.com$/i,/(^|\.)x\.com$/i,/(^|\.)twitter\.com$/i,/(^|\.)facebook\.com$/i,/(^|\.)linkedin\.com$/i,/(^|\.)github\.com$/i,/(^|\.)microsoft\.com$/i,/(^|\.)apple\.com$/i,/(^|\.)youtube\.com$/i],
+    []
+  );
+
+  // ── Firebase init
+  const app = useMemo(() => (getApps().length ? getApps()[0] : initializeApp(FIREBASE_CONFIG)), []);
+  const auth = useMemo(() => getAuth(app), [app]);
+  const db = useMemo(() => getFirestore(app), [app]);
+
+  // ── Auth
+  const [authReady, setAuthReady] = useState(false);
+  const [uid, setUid] = useState(null);
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) { await signInAnonymously(auth); return; }
+      setUid(user.uid); setAuthReady(true);
+    });
+    return () => unsub();
+  }, [auth]);
+
+  // ── Room state
+  const [ownerUid, setOwnerUid] = useState(null);
+  const [roomOpen, setRoomOpen] = useState(true);
+  const [membersOnline, setMembersOnline] = useState(1);
+
+  // ── Shared UI state (synced via Firestore)
+  const [inputs, setInputs] = useState(["https://www.google.com","https://www.omannews.gov.om","https://gemini.google.com","https://www.chatgpt.com"]);
+  const [urls, setUrls] = useState(["https://www.google.com","https://www.omannews.gov.om","https://gemini.google.com","https://www.chatgpt.com"]);
+  const [forceEmbed, setForceEmbed] = useState([false,false,false,false]);
+  const [collapsed, setCollapsed] = useState([false,false,false,false]);
+  const [allowList, setAllowList] = useState([]); // optional domain allow-list (owner managed)
+
+  // Prevent echo loops when applying remote state
+  const localChangeRef = useRef(0);
+
+  // ── Bootstrap: create/join room, presence, listeners
+  useEffect(() => {
+    if (!authReady || !uid) return;
+    (async () => {
+      const roomRef = doc(db, "rooms", roomId);
+
+      // Create room if missing
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(roomRef);
+        if (!snap.exists()) {
+          tx.set(roomRef, { createdAt: serverTimestamp(), ownerUid: uid, isOpen: true, memberCount: 0 });
+        }
+      });
+
+      // Join via Cloud Function (enforces cap/lock). Fallback to self-join if CF not deployed.
+      try {
+        const r = await fetch(`${CF_JOIN_URL}?roomId=${encodeURIComponent(roomId)}`, { credentials: "include" });
+        if (!r.ok) throw new Error("join failed");
+      } catch {
+        // Fallback (dev): self-register if room open and not full (best-effort; not race-safe)
+        await runTransaction(db, async (tx) => {
+          const rs = await tx.get(roomRef);
+          const d = rs.data() || {}; const open = !!d.isOpen; const cnt = d.memberCount || 0;
+          if (!open || cnt >= MAX_MEMBERS) throw new Error("room locked/full");
+          tx.set(doc(db, "rooms", roomId, "members", uid), {
+            uid, role: d.ownerUid === uid ? "owner" : (cnt === 0 ? "owner" : "member"),
+            displayName: `User-${String(uid).slice(0,6)}`, lastSeen: serverTimestamp()
+          }, { merge: true });
+          tx.update(roomRef, { memberCount: cnt + 1 });
+        });
+      }
+
+      // Presence heartbeat
+      const meRef = doc(db, "rooms", roomId, "members", uid);
+      const ping = setInterval(async () => { try { await updateDoc(meRef, { lastSeen: serverTimestamp() }); } catch {} }, 20000);
+
+      // Room & member listeners
+      const unsubRoom = onSnapshot(roomRef, (ss) => {
+        const d = ss.data() || {}; setOwnerUid(d.ownerUid || null); setRoomOpen(!!d.isOpen);
+      });
+      const unsubMembers = onSnapshot(collection(db, "rooms", roomId, "members"), (qs) => {
+        const now = Date.now(); let online = 0; qs.forEach((m) => {
+          const v = m.data(); const ts = v.lastSeen; if (ts && now - (ts instanceof Timestamp ? ts.toMillis() : 0) < 60000) online++;
+        }); setMembersOnline(Math.max(online, 1));
+      });
+
+      // Sync shared UI state
+      const uiRef = doc(db, "rooms", roomId, "state", "ui");
+      const unsubUi = onSnapshot(uiRef, (ss) => {
+        const d = ss.data(); if (!d) return; if (localChangeRef.current > 0) { localChangeRef.current--; return; }
+        setInputs(d.inputs || inputs); setUrls(d.urls || urls);
+        setForceEmbed(d.forceEmbed || forceEmbed); setCollapsed(d.collapsed || collapsed);
+        setAllowList(d.allowList || []);
+      });
+
+      return () => { clearInterval(ping); unsubRoom(); unsubMembers(); unsubUi(); };
+    })();
+  }, [authReady, uid, db, roomId]);
+
+  // ── Helpers
+  const ensureHttpUrl = (u) => {
+    const s = String(u || "").trim(); if (!/^https?:\/\//i.test(s)) return "";
+    try { const { protocol } = new URL(s); return (protocol === "http:" || protocol === "https:") ? s : ""; }
+    catch { return ""; }
+  };
+  const saveState = async (patch) => {
+    const ref = doc(db, "rooms", roomId, "state", "ui");
+    localChangeRef.current++;
+    await setDoc(ref, { inputs, urls, forceEmbed, collapsed, allowList, ...patch, updatedAt: serverTimestamp(), updatedBy: uid }, { merge: true });
+  };
+  const saveStateDebounced = useMemo(() => debounce(saveState, 600), [inputs, urls, forceEmbed, collapsed, allowList]);
+
+  const onGo = async (i) => {
+    const next = [...urls]; next[i] = ensureHttpUrl(inputs[i]); setUrls(next);
+    await saveState({ urls: next });
+  };
+  const quickSet = async (list) => { setInputs(list); const withProto = list.map(ensureHttpUrl); setUrls(withProto); await saveState({ inputs: list, urls: withProto }); };
+
+  // ── Chat (shared)
+  const [chat, setChat] = useState([]);
+  useEffect(() => {
+    if (!authReady) return;
+    const qRef = query(collection(db, "rooms", roomId, "chat"), orderBy("ts","asc"), limit(500));
+    const unsub = onSnapshot(qRef, (qs) => { const list = []; qs.forEach(d => list.push({ id: d.id, ...(d.data()) })); setChat(list); });
+    return () => unsub();
+  }, [authReady]);
+  const sendChat = async (text) => { const t = String(text||"").trim(); if (!t || !uid) return; await addDoc(collection(db, "rooms", roomId, "chat"), { authorUid: uid, text: t, ts: serverTimestamp() }); };
+
+  // ── AI assist via server proxy (Gemini through CF_AI_PROXY)
+  const [askAI, setAskAI] = useState(true);
+  const [aiBusy, setAiBusy] = useState(false);
+  const askAssistant = async (userText) => {
+    try {
+      setAiBusy(true);
+      const last20 = chat.slice(-20).map(m => ({ role: m.authorUid === uid ? "user" : "assistant", content: m.text }));
+      last20.push({ role: "user", content: userText });
+      const r = await fetch(CF_AI_PROXY, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: last20 }) });
+      const j = await r.json();
+      await sendChat(j.text ? `AI ${j.text}` : "AI (no response)");
+    } catch (e) {
+      await sendChat(`AI error: ${e?.message || String(e)}`);
+    } finally { setAiBusy(false); }
+  };
+  const onSendComment = async (text) => { await sendChat(text); if (askAI) await askAssistant(text); };
+
+  // ── Owner helpers
+  const isOwner = uid && ownerUid && uid === ownerUid;
+  const copyShare = async () => { try { await navigator.clipboard.writeText(shareUrl); alert("Share link copied"); } catch { prompt("Copy link:", shareUrl); } };
+  const toggleLock = async () => { if (!isOwner) return; await updateDoc(doc(db, "rooms", roomId), { isOpen: !roomOpen }); };
+  const minimizeAll = async () => { const v=[true,true,true,true]; setCollapsed(v); await saveState({ collapsed: v }); };
+  const restoreAll  = async () => { const v=[false,false,false,false]; setCollapsed(v); await saveState({ collapsed: v }); };
+
+  return (
+    <div className="min-h-screen bg-[#0C1222] text-zinc-100">
+      <div className={`grid ${showComments ? "lg:grid-cols-[260px_1fr_360px]" : "lg:grid-cols-[260px_1fr]"} min-h-screen`}>
+        <Sidebar membersOnline={membersOnline} />
+
+        {/* Main */}
+        <div className="flex flex-col">
+          <div className="px-4 py-3 border-b border-white/10 bg-[#0F1730] sticky top-0 z-20">
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-semibold tracking-wide mr-2">Control Panel</div>
+              <div className="flex-1 flex items-center gap-2">
+                <input placeholder={`Room: ${roomId}  •  Search…`} className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 outline-none placeholder:text-zinc-400" />
+                <button className="px-3 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-600">+ New Task</button>
+              </div>
+              <div className="ml-auto flex items-center gap-2">
+                <label className="px-2 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs flex items-center gap-2">
+                  <input type="checkbox" checked={safeMode} onChange={e=>setSafeMode(e.target.checked)} /> Safe Mode
+                </label>
+                <button onClick={copyShare} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10">Share</button>
+                {isOwner && (
+                  <button onClick={toggleLock} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10">{roomOpen?"Lock Room":"Unlock Room"}</button>
+                )}
+                <button onClick={minimizeAll} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10">Min All</button>
+                <button onClick={restoreAll} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10">Restore All</button>
+                <button onClick={()=>setShowComments(s=>!s)} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10">{showComments?"Hide Comments":"Show Comments"}</button>
+                <div className="w-8 h-8 rounded-full bg-white/10 grid place-items-center text-xs">Z</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Preset chips */}
+          <div className="px-4 pt-3 space-x-2">
+            <button onClick={()=>quickSet(['https://www.google.com','https://www.bbc.com','https://www.aljazeera.com','https://www.reuters.com'])} className="px-2.5 py-1.5 rounded-full text-xs bg-white/5 border border-white/10 hover:bg-white/10">News Mix</button>
+            <button onClick={()=>quickSet(['https://gemini.google.com','https://chat.openai.com','https://www.perplexity.ai','https://duckduckgo.com'])} className="px-2.5 py-1.5 rounded-full text-xs bg-white/5 border border-white/10 hover:bg-white/10">AI Tools</button>
+            <button onClick={()=>quickSet(['https://developer.mozilla.org','https://stackoverflow.com','https://github.com','https://npmjs.com'])} className="px-2.5 py-1.5 rounded-full text-xs bg-white/5 border border-white/10 hover:bg-white/10">Dev</button>
+          </div>
+
+          {/* 2×2 panel grid */}
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Panel
+                key={i}
+                index={i}
+                safeMode={safeMode}
+                input={inputs[i]}
+                setInput={(v)=>{ const n=[...inputs]; n[i]=v; setInputs(n); saveStateDebounced({ inputs: n }); }}
+                url={urls[i]}
+                onGo={()=>onGo(i)}
+                knownBlocked={KNOWN_BLOCKED}
+                forceEmbed={forceEmbed[i]}
+                setForceEmbed={async (v)=>{ const n=[...forceEmbed]; n[i]=v; setForceEmbed(n); await saveState({ forceEmbed: n }); }}
+                collapsed={collapsed[i]}
+                onToggleCollapsed={async()=>{ const n=[...collapsed]; n[i]=!n[i]; setCollapsed(n); await saveState({ collapsed: n }); }}
+                allowList={allowList}
+              />
+            ))}
+          </div>
+
+          <div className="px-4 pb-4 text-[11px] text-zinc-400">Online: {membersOnline} • Note: many sites block iframes; use Pop‑out or a server‑side preview.</div>
+        </div>
+
+        {showComments && (
+          <CommentCenter chat={chat} onSend={onSendComment} askAI={askAI} setAskAI={setAskAI} aiBusy={aiBusy} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ membersOnline }) {
+  return (
+    <aside className="bg-[#0B142A] border-r border-white/10 p-3 flex flex-col gap-3">
+      <div className="px-3 py-2 rounded-xl bg-white/5 text-sm font-semibold flex items-center justify-between">
+        <span>Control Panel</span>
+        <span className="text-[10px] opacity-70">● {membersOnline} online</span>
+      </div>
+      <nav className="text-sm space-y-5">
+        <div>
+          <div className="px-3 pb-1 text-[11px] uppercase tracking-wide text-zinc-400">Dashboard</div>
+          <NavItem label="Dashboard" />
+        </div>
+        <div>
+          <div className="px-3 pb-1 text-[11px] uppercase tracking-wide text-zinc-400">Agents</div>
+          <NavItem label="Code Reviewer" />
+          <NavItem label="Thinker" active />
+          <NavItem label="Mr.Q" />
+          <NavItem label="ALGA" />
+          <NavItem label="Orchestrator" />
+          <NavItem label="Trigger" />
+        </div>
+        <div>
+          <div className="px-3 pb-1 text-[11px] uppercase tracking-wide text-zinc-400">Workspace</div>
+          <NavItem label="Connectors" />
+          <NavItem label="Private Room" />
+          <NavItem label="Storage" />
+          <NavItem label="Billing & Cost" />
+        </div>
+        <div>
+          <div className="px-3 pb-1 text-[11px] uppercase tracking-wide text-zinc-400">Dev Tools</div>
+          <NavItem label="Dev Tools" />
+        </div>
+        <div>
+          <div className="px-3 pb-1 text-[11px] uppercase tracking-wide text-zinc-400">User</div>
+          <NavItem label="User Profile" />
+          <NavItem label="Copyright & License" />
+        </div>
+      </nav>
+      <div className="mt-auto text-[10px] text-zinc-500 px-3">© 2025 ZQ AI LOGIC™</div>
+    </aside>
+  );
+}
+
+function NavItem({ label, active=false }){
+  return (
+    <div className={`mx-1 mb-1 px-3 py-2 rounded-xl cursor-default ${active? 'bg-indigo-600/20 border border-indigo-500/40' : 'bg-white/5 border border-white/10 hover:bg-white/10'}`}>{label}</div>
+  );
+}
+
+function Panel({ index, safeMode, input, setInput, url, onGo, knownBlocked, forceEmbed, setForceEmbed, collapsed, onToggleCollapsed, allowList }) {
+  const [isBlockedDomain, setIsBlockedDomain] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const timerRef = useRef(null);
+
+  // Host checks
+  const host = useMemo(() => { try { return new URL(url).hostname; } catch { return ""; } }, [url]);
+  const allowed = useMemo(() => {
+    if (!allowList || allowList.length === 0) return true; // no allow-list → allow all http(s)
+    if (!host) return false; return allowList.some(d => host === d || host.endsWith("."+d));
+  }, [allowList, host]);
+
+  useEffect(() => {
+    if (!url) return; setLoading(true);
+    try { setIsBlockedDomain(knownBlocked.some(rx => rx.test(new URL(url).hostname))); } catch { setIsBlockedDomain(false); }
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => { setLoading(false); }, 4000);
+    return () => { if (timerRef.current) window.clearTimeout(timerRef.current); };
+  }, [url, forceEmbed]);
+
+  const onFrameLoad = () => { setLoading(false); if (timerRef.current) window.clearTimeout(timerRef.current); };
+  const title = useMemo(() => host || `Panel ${index+1}`, [host, index]);
+
+  return (
+    <section className="bg-[#0F1730] border border-white/10 rounded-2xl shadow-sm overflow-hidden flex flex-col h-[40vh]">
+      <div className="flex items-center gap-2 p-2 border-b border-white/10">
+        <div className="px-2 py-1 rounded-lg text-[11px] bg-white/5 text-zinc-300">{title}</div>
+        <input value={input} onChange={(e)=>setInput(e.target.value)} onKeyDown={(e)=>e.key==="Enter" && onGo()} placeholder="https://example.com" className="flex-1 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 focus:outline-none placeholder:text-zinc-400" />
+        <button onClick={onGo} className="px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-600">Go</button>
+        {url && (<a href={url} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10">Pop‑out</a>)}
+        <button onClick={onToggleCollapsed} className="ml-1 px-2 py-1 rounded-lg text-xs bg-white/5 border border-white/10 hover:bg-white/10">{collapsed?"Restore":"Minimize"}</button>
+        {isBlockedDomain && (
+          <label className="ml-auto flex items-center gap-2 text-xs text-zinc-400">
+            <input type="checkbox" checked={forceEmbed} onChange={(e)=>setForceEmbed(e.target.checked)} /> Try embed anyway
+          </label>
+        )}
+      </div>
+
+      {!collapsed && (
+        <div className="relative flex-1 bg-[#0B142A]">
+          {!allowed && (
+            <div className="absolute inset-0 grid place-items-center p-6 text-center">
+              <div className="max-w-md text-zinc-300 text-sm">This domain isn’t on the room allow‑list.</div>
+            </div>
+          )}
+          {allowed && url && (!isBlockedDomain || forceEmbed) && (
+            safeMode ? (
+              <iframe key={url+String(forceEmbed)+"s"} src={url} className="absolute inset-0 w-full h-full" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-popups" onLoad={onFrameLoad} />
+            ) : (
+              <iframe key={url+String(forceEmbed)+"u"} src={url} className="absolute inset-0 w-full h-full" referrerPolicy="no-referrer" onLoad={onFrameLoad} />
+            )
+          )}
+          {allowed && url && isBlockedDomain && !forceEmbed && (
+            <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
+              <div className="max-w-md text-zinc-300">
+                <div className="text-sm">This site likely blocks embedding in iframes.</div>
+                <div className="mt-3 flex flex-wrap gap-2 justify-center">
+                  <a href={url} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-600">Open in new tab</a>
+                  <button onClick={()=>setForceEmbed(true)} className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10">Try embed anyway</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {!url && (
+            <div className="absolute inset-0 grid place-items-center">
+              <div className="text-xs text-zinc-400">Enter a URL and press Go</div>
+            </div>
+          )}
+          {loading && (
+            <div className="absolute inset-0 grid place-items-center bg-gradient-to-b from-white/5 to-transparent">
+              <div className="animate-pulse text-xs text-zinc-400">Loading…</div>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CommentCenter({ chat, onSend, askAI, setAskAI, aiBusy }){
+  const [text, setText] = useState("");
+  const listRef = useRef(null);
+  useEffect(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, [chat]);
+  return (
+    <aside className="bg-[#0F1730] border-l border-white/10 p-3 flex flex-col">
+      <div className="text-sm font-medium mb-2">Comment Center</div>
+      <div ref={listRef} className="flex-1 overflow-auto space-y-2 pr-1">
+        {chat.length === 0 && (<div className="text-xs text-zinc-400">Type a comment. Toggle “Ask AI” to get a reply only when you want.</div>)}
+        {chat.map(m => (
+          <div key={m.id} className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${String(m.text).startsWith("AI ")? 'bg-indigo-600/30 border border-indigo-500/40' : 'bg-white/5 ml-auto'}`}>
+            <div className="text-[10px] opacity-60 mb-0.5">{String(m.text).startsWith("AI ")? 'AI' : 'User'}</div>
+            <div className="whitespace-pre-wrap break-words">{m.text}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-start gap-2">
+        <textarea value={text} onChange={e=>setText(e.target.value)} placeholder="Write a comment…" className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 focus:outline-none min-h-[44px] max-h-40" />
+        <button disabled={!text.trim() || aiBusy} onClick={()=>{ onSend(text); setText(""); }} className="px-3 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50">Send</button>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-xs text-zinc-300">
+        <label className="flex items-center gap-2"><input type="checkbox" checked={askAI} onChange={e=>setAskAI(e.target.checked)} /> Ask AI on send</label>
+        {aiBusy && <span className="animate-pulse">AI thinking…</span>}
+      </div>
+    </aside>
+  );
+}
+
+// ── Utils
+function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+
+// ───────────────────────────────────────────────────────────────────────────────
+// BACKEND — Cloud Functions (TypeScript, modular SDK) — place in functions/src/
+// 1) aiProxy.ts — Gemini proxy (uses env var GEMINI_API_KEY)
+/*
+import { onRequest } from "firebase-functions/v2/https";
+import fetch from "node-fetch";
+export const aiProxy = onRequest({cors: true, region: "your-region"}, async (req, res) => {
+  try {
+    const { messages=[] } = (req.body||{});
+    // Basic guardrails
+    if (!Array.isArray(messages) || messages.length === 0) return res.status(400).json({ error: "No messages" });
+    const system = "You are the Comment Center AI. Be concise. Summaries in bullets; brainstorm 3–5 ideas when asked.";
+    const prompt = [ { parts: [{ text: system }] }, { parts: [{ text: messages.map(m=>`${m.role==='user'?'User':'Assistant'}: ${m.content}`).join('
+') }] } ];
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: prompt })
+    });
+    const j = await r.json();
+    const text = j?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    res.json({ text });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+*/
+
+// 2) joinRoom.ts — atomic member cap + open gate
+/*
+import { onRequest } from "firebase-functions/v2/https";
+import { getFirestore, runTransaction, FieldValue } from "firebase-admin/firestore";
+import * as admin from "firebase-admin";
+admin.initializeApp();
+export const joinRoom = onRequest({cors: true, region: "your-region"}, async (req, res) => {
+  const roomId = String(req.query.roomId||""); if (!roomId) return res.status(400).send("roomId required");
+  // In prod, use ID token auth; for MVP we allow anonymous
+  const db = getFirestore();
+  await runTransaction(db, async (tx) => {
+    const roomRef = db.doc(`rooms/${roomId}`);
+    const rs = await tx.get(roomRef);
+    if (!rs.exists) tx.set(roomRef, { isOpen: true, memberCount: 0, createdAt: FieldValue.serverTimestamp() });
+    const r = (await tx.get(roomRef)).data()!;
+    if (!r.isOpen) throw new Error("locked");
+    const membersSnap = await tx.get(db.collection(`rooms/${roomId}/members`));
+    if (membersSnap.size >= 4) throw new Error("full");
+    // For MVP we do not know UID here; your frontend can pass an auth UID in header/cookie.
+    // This endpoint is mainly a gate to keep count consistent.
+  });
+  res.json({ ok: true });
+});
+*/
+
+// 3) kickMember.ts — owner-only removal (implement owner auth check as needed)
+/* similar pattern to joinRoom */
+
+// 4) cleanPresence.ts — scheduled cleanup of stale members
+/*
+import { onSchedule } from "firebase-functions/v2/scheduler";
+import { getFirestore, Timestamp } from "firebase-admin/firestore";
+export const cleanPresence = onSchedule("every 5 minutes", async () => {
+  const db = getFirestore(); const now = Date.now();
+  const rooms = await db.collection("rooms").get();
+  for (const room of rooms.docs) {
+    const members = await db.collection(`rooms/${room.id}/members`).get();
+    for (const m of members.docs) {
+      const data:any = m.data(); const ts = data.lastSeen as Timestamp; if (!ts || now - ts.toMillis() > 10*60*1000) await m.ref.delete();
+    }
+    const count = (await db.collection(`rooms/${room.id}/members`).get()).size;
+    await room.ref.update({ memberCount: count });
+  }
+});
+*/
+
+// ───────────────────────────────────────────────────────────────────────────────
+// FIRESTORE RULES (paste in Firebase → Firestore → Rules)
+/*
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isMember(roomId) {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+    function isOwner(roomId) {
+      return request.auth != null &&
+        get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerUid == request.auth.uid;
+    }
+    match /rooms/{roomId} {
+      allow create: if request.auth != null;
+      allow read: if isMember(roomId) || resource.data.isOpen == true;
+      allow update, delete: if isOwner(roomId);
+
+      match /members/{uid} {
+        allow read: if isMember(roomId);
+        allow create: if isOwner(roomId) || (request.auth != null &&
+          request.auth.uid == uid && get(/databases/$(database)/documents/rooms/$(roomId)).data.isOpen == true);
+        allow update, delete: if isOwner(roomId) || request.auth.uid == uid;
+      }
+
+      match /state/{doc} {
+        allow read: if isMember(roomId);
+        allow update, create: if isMember(roomId) &&
+          request.resource.data.inputs is list && request.resource.data.inputs.size() == 4 &&
+          request.resource.data.urls is list && request.resource.data.urls.size() == 4 &&
+          request.resource.data.collapsed is list && request.resource.data.collapsed.size() == 4 &&
+          request.resource.data.forceEmbed is list && request.resource.data.forceEmbed.size() == 4;
+      }
+
+      match /chat/{msgId} {
+        allow read: if isMember(roomId);
+        allow create: if isMember(roomId);
+      }
+    }
+  }
+}
+*/
+
+// ───────────────────────────────────────────────────────────────────────────────
+// HOSTING HEADERS (firebase.json — add under "hosting.headers")
+/*
+{
+  "hosting": {
+    "headers": [
+      { "source": "**", "headers": [
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; img-src * data: blob:; media-src *; frame-src https:; connect-src 'self' https://*.googleapis.com https://firestore.googleapis.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'" }
+      ]}
+    ]
+  }
+}
+*/
