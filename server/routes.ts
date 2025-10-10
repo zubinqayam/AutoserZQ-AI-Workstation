@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
+import { generateResearchResponse } from "./gemini";
 import { z } from "zod";
 import {
   insertRoomSchema,
@@ -225,6 +226,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/room/:roomId/state", async (req, res) => {
     const state = await storage.getRoomState(req.params.roomId);
     res.json(state || null);
+  });
+
+  // AI proxy endpoint
+  app.post("/api/ai/chat", async (req, res) => {
+    try {
+      const { messages } = req.body;
+      if (!Array.isArray(messages)) {
+        return res.status(400).json({ error: "Messages must be an array" });
+      }
+
+      const response = await generateResearchResponse(messages);
+      res.json({ text: response });
+    } catch (error: any) {
+      console.error("AI chat error:", error);
+      res.status(500).json({ error: error.message || "AI service unavailable" });
+    }
   });
 
   return httpServer;
