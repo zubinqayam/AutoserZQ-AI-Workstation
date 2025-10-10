@@ -1,8 +1,14 @@
 import { useState } from "react";
-import { Share2, Lock, Unlock, Minimize2, Maximize2 } from "lucide-react";
+import { Share2, Lock, Unlock, Minimize2, Maximize2, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface ControlHeaderProps {
   roomId: string;
@@ -11,9 +17,31 @@ interface ControlHeaderProps {
   onToggleLock?: () => void;
   onMinimizeAll?: () => void;
   onRestoreAll?: () => void;
+  onLoadPreset?: (urls: string[]) => void;
   safeMode: boolean;
   onSafeModeChange?: (value: boolean) => void;
 }
+
+const URL_PRESETS = {
+  research: [
+    "https://scholar.google.com",
+    "https://www.semanticscholar.org",
+    "https://arxiv.org",
+    "https://www.researchgate.net"
+  ],
+  ai: [
+    "https://gemini.google.com",
+    "https://chat.openai.com",
+    "https://claude.ai",
+    "https://www.perplexity.ai"
+  ],
+  news: [
+    "https://news.google.com",
+    "https://www.bbc.com/news",
+    "https://www.reuters.com",
+    "https://www.nytimes.com"
+  ],
+};
 
 export default function ControlHeader({
   roomId,
@@ -22,6 +50,7 @@ export default function ControlHeader({
   onToggleLock,
   onMinimizeAll,
   onRestoreAll,
+  onLoadPreset,
   safeMode,
   onSafeModeChange,
 }: ControlHeaderProps) {
@@ -50,6 +79,25 @@ export default function ControlHeader({
           <Button size="sm" data-testid="button-new-task">+ New Task</Button>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" data-testid="button-presets">
+                <BookOpen className="w-4 h-4 mr-1" />
+                Presets
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={() => onLoadPreset?.(URL_PRESETS.research)}>
+                Research Tools
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onLoadPreset?.(URL_PRESETS.ai)}>
+                AI Assistants
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onLoadPreset?.(URL_PRESETS.news)}>
+                News Sources
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <label className="px-3 py-2 rounded-md bg-background/50 border border-border hover-elevate text-xs flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
