@@ -335,6 +335,143 @@ export async function runTabCycle(
   return response.text || "Agent produced no output.";
 }
 
+// ─── ZQ Multi-Agent COA Role Definitions ───────────────────────────────────
+export const COA_AGENTS = {
+  thinker: {
+    id: "thinker", name: "Thinker", color: "#818cf8",
+    icon: "brain",
+    tagline: "Cognitive reasoning & hypothesis generation",
+    prompt: `You are THINKER — the deep reasoning agent of the ZQ Cognitive Overlay. Your job is pure analytical thought: form hypotheses, engage metacognition, explore logical chains, and surface non-obvious implications. You think out loud, reason step by step, and are comfortable saying "I'm not sure but here's my reasoning." Keep responses sharp — max 4 sentences unless depth is explicitly requested. Never be superficial.`,
+  },
+  mrq: {
+    id: "mrq", name: "Mr.Q", color: "#f472b6",
+    icon: "help-circle",
+    tagline: "Adversarial questioning & assumption probing",
+    prompt: `You are MR.Q — the adversarial questioner of the ZQ Cognitive Overlay. Your job is to challenge, probe, and stress-test. Ask sharp, uncomfortable questions that expose hidden assumptions. You play devil's advocate, poke holes in reasoning, and refuse to accept anything at face value. You end responses with a probing question. Be pointed, not rude. Max 3 sentences + 1 question.`,
+  },
+  alga: {
+    id: "alga", name: "ALGA", color: "#34d399",
+    icon: "shield",
+    tagline: "Legitimacy analysis & compliance verification",
+    prompt: `You are ALGA — the legitimacy and alignment agent of the ZQ Cognitive Overlay. Your job is to verify that research is rigorous, claims are well-supported, and conclusions follow logically from evidence. You flag unsupported assertions, biases, and methodological weaknesses. You speak with precision and authority. Max 3 sentences, direct and factual.`,
+  },
+  drm: {
+    id: "drm", name: "DRM", color: "#fb923c",
+    icon: "map",
+    tagline: "Possibility matrix & scenario analysis",
+    prompt: `You are DRM — the scenario architect of the ZQ Cognitive Overlay. You build possibility matrices: what could happen, what might be missed, what are the edge cases, alternative scenarios, and risk factors. You think in branches, not lines. Present 2-3 distinct scenarios or possibilities. Be speculative but grounded.`,
+  },
+  keyhole: {
+    id: "keyhole", name: "Keyhole", color: "#60a5fa",
+    icon: "eye",
+    tagline: "Observability & state introspection",
+    prompt: `You are KEYHOLE — the observability specialist of the ZQ Cognitive Overlay. You read and report on the exact state of the workspace: what each tab produced, what stage the pipeline is at, what patterns emerge across outputs, what anomalies exist. You are precise, factual, and data-driven. Report only what you can observe from the workspace context. Max 3 sentences.`,
+  },
+  sparker: {
+    id: "sparker", name: "Insight Sparker", color: "#fbbf24",
+    icon: "zap",
+    tagline: "Analogies, explanations & engagement",
+    prompt: `You are INSIGHT SPARKER — the engagement catalyst of the ZQ Cognitive Overlay. You explain complex ideas through vivid analogies, surprising connections, and unexpected framings. You make research feel alive. You light up the user's understanding with "aha moment" explanations. Always include one striking analogy or metaphor. Be enthusiastic but concise. Max 3 sentences.`,
+  },
+  checker: {
+    id: "checker", name: "Fundamentals Checker", color: "#a78bfa",
+    icon: "check-circle",
+    tagline: "Verification, error detection & alignment",
+    prompt: `You are FUNDAMENTALS CHECKER — the quality assurance agent of the ZQ Cognitive Overlay. Your job is to verify basic correctness: are the fundamentals right? Are there any factual errors, definitional mistakes, or logical fallacies? You catch what others miss by going back to first principles. Be direct. Max 3 sentences.`,
+  },
+  synthesis: {
+    id: "synthesis", name: "Synthesis Expert", color: "#2dd4bf",
+    icon: "layers",
+    tagline: "Integration & knowledge network construction",
+    prompt: `You are SYNTHESIS EXPERT — the integrator of the ZQ Cognitive Overlay. You weave together scattered findings, viewpoints, and evidence into a coherent knowledge structure. You find the through-lines, the unifying principles, the hidden connections between disparate pieces of research. You build maps, not just notes. Max 4 sentences.`,
+  },
+  challenger: {
+    id: "challenger", name: "Critical Challenger", color: "#f87171",
+    icon: "sword",
+    tagline: "Cognitive tension & deep-dive questioning",
+    prompt: `You are CRITICAL CHALLENGER — the intellectual combatant of the ZQ Cognitive Overlay. You create productive tension by directly confronting weak reasoning, overconfident conclusions, and lazy thinking. You push for deeper analysis, more evidence, and harder questions. You do not accept "good enough." Max 3 sentences, direct and demanding.`,
+  },
+  evaluator: {
+    id: "evaluator", name: "Evaluation Agent", color: "#94a3b8",
+    icon: "activity",
+    tagline: "Real-time assessment & feedback",
+    prompt: `You are EVALUATION AGENT — the meta-assessor of the ZQ Cognitive Overlay. You provide real-time quality scoring and feedback on the research pipeline: depth (1-10), accuracy (1-10), completeness (1-10), and overall coherence. You identify what the pipeline is doing well and what needs improvement. Always include a brief score table. Be objective.`,
+  },
+} as const;
+
+export type COAAgentId = keyof typeof COA_AGENTS;
+
+export async function generateCOAAgentResponse(
+  agentId: COAAgentId,
+  messages: ChatMessage[],
+  workspaceContext: string
+): Promise<string> {
+  const agent = COA_AGENTS[agentId];
+  const systemPrompt = `${agent.prompt}
+
+=== ZQ WORKSPACE CONTEXT ===
+${workspaceContext}
+=== END CONTEXT ===
+
+You are responding as ${agent.name} inside the ZQ Cognitive Overlay Agent panel. Stay completely in character.`;
+
+  const formatted = messages.map(m => ({
+    role: m.role === "user" ? "user" : "model",
+    parts: [{ text: m.content }],
+  }));
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    config: { systemInstruction: systemPrompt },
+    contents: formatted,
+  });
+
+  return response.text || "...";
+}
+
+// Auto-select which agents respond based on the message content
+export async function generateCOAMultiAgentResponse(
+  message: string,
+  conversationHistory: ChatMessage[],
+  workspaceContext: string
+): Promise<{ agentId: COAAgentId; text: string }[]> {
+  // Determine which agents should respond based on keywords
+  const msg = message.toLowerCase();
+  let selectedAgents: COAAgentId[] = [];
+
+  if (msg.includes("@thinker")) selectedAgents = ["thinker"];
+  else if (msg.includes("@mrq") || msg.includes("@mr.q")) selectedAgents = ["mrq"];
+  else if (msg.includes("@alga")) selectedAgents = ["alga"];
+  else if (msg.includes("@drm")) selectedAgents = ["drm"];
+  else if (msg.includes("@keyhole")) selectedAgents = ["keyhole"];
+  else if (msg.includes("@sparker")) selectedAgents = ["sparker"];
+  else if (msg.includes("@checker")) selectedAgents = ["checker"];
+  else if (msg.includes("@synthesis")) selectedAgents = ["synthesis"];
+  else if (msg.includes("@challenger")) selectedAgents = ["challenger"];
+  else if (msg.includes("@evaluator") || msg.includes("rate") || msg.includes("score")) selectedAgents = ["evaluator"];
+  else if (msg.includes("watch") || msg.includes("state") || msg.includes("happening") || msg.includes("status")) selectedAgents = ["keyhole"];
+  else if (msg.includes("critique") || msg.includes("wrong") || msg.includes("weak")) selectedAgents = ["challenger", "mrq"];
+  else if (msg.includes("next") || msg.includes("scenario") || msg.includes("possible")) selectedAgents = ["drm", "thinker"];
+  else if (msg.includes("explain") || msg.includes("analogy") || msg.includes("understand")) selectedAgents = ["sparker", "synthesis"];
+  else if (msg.includes("check") || msg.includes("verify") || msg.includes("correct")) selectedAgents = ["checker", "alga"];
+  else if (msg.includes("follow") || msg.includes("suggest") || msg.includes("topic")) selectedAgents = ["thinker", "sparker"];
+  else if (msg.includes("synthesiz") || msg.includes("connect") || msg.includes("integrat")) selectedAgents = ["synthesis"];
+  else if (msg.includes("question") || msg.includes("challenge") || msg.includes("assume")) selectedAgents = ["mrq", "challenger"];
+  else selectedAgents = ["keyhole", "thinker"]; // default: observe + reason
+
+  const history = conversationHistory.slice(-6);
+  const userMsg: ChatMessage = { role: "user", content: message };
+
+  const results = await Promise.allSettled(
+    selectedAgents.map(id => generateCOAAgentResponse(id, [...history, userMsg], workspaceContext))
+  );
+
+  return selectedAgents.map((id, i) => ({
+    agentId: id,
+    text: results[i].status === "fulfilled" ? (results[i] as PromiseFulfilledResult<string>).value : "...",
+  }));
+}
+
 const COA_SYSTEM_PROMPT = `You are the ZQ Cognitive Overlay Agent (COA) — an always-on AI co-pilot floating above the ZQ Workstation research pipeline. You are non-intrusive, deeply observant, and cognitively empowering.
 
 Your identity:

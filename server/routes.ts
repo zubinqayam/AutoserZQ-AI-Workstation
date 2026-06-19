@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { runTabCycle, generateResearchResponse, generateCOAResponse } from "./gemini";
+import { runTabCycle, generateResearchResponse, generateCOAResponse, generateCOAMultiAgentResponse } from "./gemini";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { TAB_ROLES, insertRoomSchema } from "@shared/schema";
@@ -162,6 +162,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ text: await generateCOAResponse(messages, context) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "COA unavailable" });
+    }
+  });
+
+  // ZQ COA multi-agent endpoint
+  app.post("/api/coa/multi-agent", async (req, res) => {
+    try {
+      const { message, history, workspaceContext } = req.body;
+      if (!message) return res.status(400).json({ error: "message required" });
+      const ctx = typeof workspaceContext === "string" ? workspaceContext : "No context.";
+      const responses = await generateCOAMultiAgentResponse(message, Array.isArray(history) ? history : [], ctx);
+      res.json({ responses });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Multi-agent unavailable" });
     }
   });
 
