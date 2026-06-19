@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { runTabCycle, generateResearchResponse } from "./gemini";
+import { runTabCycle, generateResearchResponse, generateCOAResponse } from "./gemini";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { TAB_ROLES, insertRoomSchema } from "@shared/schema";
@@ -150,6 +150,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ text: await generateResearchResponse(messages) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "AI unavailable" });
+    }
+  });
+
+  // ZQ COA (Cognitive Overlay Agent) chat
+  app.post("/api/coa/chat", async (req, res) => {
+    try {
+      const { messages, workspaceContext } = req.body;
+      if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
+      const context = typeof workspaceContext === "string" ? workspaceContext : "No workspace context provided.";
+      res.json({ text: await generateCOAResponse(messages, context) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "COA unavailable" });
     }
   });
 

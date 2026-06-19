@@ -3,6 +3,7 @@ import { useWebSocket } from "@/hooks/use-websocket";
 import RoomSidebar from "@/components/RoomSidebar";
 import AgentTab from "@/components/AgentTab";
 import CommandCenter from "@/components/CommandCenter";
+import COAOverlay from "@/components/COAOverlay";
 import { Button } from "@/components/ui/button";
 import { Share2, Lock, Unlock, Wifi, WifiOff, ArrowRight, Play, Zap } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -195,6 +196,9 @@ export default function ConferenceRoom() {
         onSendMessage={handleSendMessage}
         onStartRer={handleStartRer}
       />
+
+      {/* ZQ Cognitive Overlay Agent — always-on-top floating chat */}
+      <COAOverlay rerTasks={rerTasks} />
     </div>
   );
 }
