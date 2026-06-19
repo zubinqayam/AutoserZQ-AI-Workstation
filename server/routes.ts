@@ -2,15 +2,10 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { runAgentStep, generateResearchResponse } from "./gemini";
+import { runTabCycle, generateResearchResponse } from "./gemini";
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import {
-  insertRoomSchema, insertMemberSchema, insertChatMessageSchema, insertRoomStateSchema,
-  TAB_ROLES,
-} from "@shared/schema";
-
-const MAX_MEMBERS = 10;
+import { TAB_ROLES, insertRoomSchema } from "@shared/schema";
 
 interface WSClient extends WebSocket {
   roomId?: string;
@@ -21,18 +16,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
-  const broadcastToRoom = (roomId: string, message: any, excludeUid?: string) => {
-    wss.clients.forEach((client) => {
-      const ws = client as WSClient;
-      if (ws.roomId === roomId && ws.readyState === WebSocket.OPEN) {
-        if (!excludeUid || ws.uid !== excludeUid) {
-          ws.send(JSON.stringify(message));
-        }
-      }
-    });
-  };
-
-  const broadcastToAll = (roomId: string, message: any) => {
+  const broadcastToRoom = (roomId: string, message: any) => {
     wss.clients.forEach((client) => {
       const ws = client as WSClient;
       if (ws.roomId === roomId && ws.readyState === WebSocket.OPEN) {
@@ -52,11 +36,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   wss.on("connection", (ws: WSClient) => {
     ws.on("message", async (data: Buffer) => {
       try {
-        const message = wsSchema.parse(JSON.parse(data.toString()));
+        const msg = wsSchema.parse(JSON.parse(data.toString()));
 
-        switch (message.type) {
+        switch (msg.type) {
           case "join": {
-            const { roomId, uid, displayName } = message;
+            const { roomId, uid, displayName } = msg;
             let room = await storage.getRoom(roomId);
             if (!room) {
               room = await storage.createRoom({ id: roomId, ownerUid: uid, isOpen: true, memberCount: 0 });
@@ -82,49 +66,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
               storage.getRoomMembers(roomId),
               storage.getRoomRerTasks(roomId),
             ]);
-
             const tasksWithOutputs = await Promise.all(
-              rerTasks.slice(0, 5).map(async (t) => ({
-                ...t,
-                agentOutputs: await storage.getTaskAgentOutputs(t.id),
-              }))
+              rerTasks.slice(0, 5).map(async (t) => ({ ...t, agentOutputs: await storage.getTaskAgentOutputs(t.id) }))
             );
 
             ws.send(JSON.stringify({ type: "init", room, state: roomState, messages: chatMessages, members, rerTasks: tasksWithOutputs }));
-            broadcastToRoom(roomId, { type: "member-update", members }, uid);
+            // notify others
+            const allMembers = await storage.getRoomMembers(roomId);
+            wss.clients.forEach((c) => {
+              const wsc = c as WSClient;
+              if (wsc.roomId === roomId && wsc !== ws && wsc.readyState === WebSocket.OPEN) {
+                wsc.send(JSON.stringify({ type: "member-update", members: allMembers }));
+              }
+            });
             break;
           }
-
           case "chat": {
-            const { roomId, authorUid, text, isAI } = message;
-            const msg = await storage.createChatMessage({ roomId, authorUid, text, isAI });
-            broadcastToAll(roomId, { type: "chat", message: msg });
+            const saved = await storage.createChatMessage({ roomId: msg.roomId, authorUid: msg.authorUid, text: msg.text, isAI: msg.isAI });
+            broadcastToRoom(msg.roomId, { type: "chat", message: saved });
             break;
           }
-
           case "state": {
-            const { roomId, state, updatedBy } = message;
-            const roomState = await storage.createOrUpdateRoomState({ roomId, ...state, updatedBy });
-            broadcastToRoom(roomId, { type: "state", state: roomState }, updatedBy);
+            const roomState = await storage.createOrUpdateRoomState({ roomId: msg.roomId, ...msg.state, updatedBy: msg.updatedBy });
+            broadcastToRoom(msg.roomId, { type: "state", state: roomState });
             break;
           }
-
           case "heartbeat": {
-            const { roomId, uid } = message;
-            const member = await storage.getMember(roomId, uid);
+            const member = await storage.getMember(msg.roomId, msg.uid);
             if (member) {
               await storage.updateMember(member.id, { lastSeen: new Date() });
-              const members = await storage.getRoomMembers(roomId);
-              broadcastToAll(roomId, { type: "member-update", members });
+              const members = await storage.getRoomMembers(msg.roomId);
+              broadcastToRoom(msg.roomId, { type: "member-update", members });
             }
             break;
           }
-
           case "lock": {
-            const { roomId, isOpen } = message;
-            await storage.updateRoom(roomId, { isOpen });
-            const room = await storage.getRoom(roomId);
-            broadcastToAll(roomId, { type: "room-update", room });
+            await storage.updateRoom(msg.roomId, { isOpen: msg.isOpen });
+            const room = await storage.getRoom(msg.roomId);
+            broadcastToRoom(msg.roomId, { type: "room-update", room });
             break;
           }
         }
@@ -140,222 +119,199 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (member) {
           await storage.updateMember(member.id, { lastSeen: new Date() });
           const members = await storage.getRoomMembers(ws.roomId);
-          broadcastToAll(ws.roomId, { type: "member-update", members });
+          broadcastToRoom(ws.roomId, { type: "member-update", members });
         }
       }
     });
   });
 
-  // REST: room endpoints
+  // REST: room
   app.get("/api/room/:roomId", async (req, res) => {
     const room = await storage.getRoom(req.params.roomId);
     if (!room) return res.status(404).json({ error: "Room not found" });
     res.json(room);
   });
-
   app.post("/api/room", async (req, res) => {
-    try {
-      const data = insertRoomSchema.parse(req.body);
-      res.json(await storage.createRoom(data));
-    } catch { res.status(400).json({ error: "Invalid room data" }); }
+    try { res.json(await storage.createRoom(insertRoomSchema.parse(req.body))); }
+    catch { res.status(400).json({ error: "Invalid room data" }); }
   });
-
-  app.get("/api/room/:roomId/members", async (req, res) => {
-    res.json(await storage.getRoomMembers(req.params.roomId));
-  });
-
+  app.get("/api/room/:roomId/members", async (req, res) => res.json(await storage.getRoomMembers(req.params.roomId)));
   app.get("/api/room/:roomId/messages", async (req, res) => {
     const limit = parseInt(req.query.limit as string) || 500;
     res.json(await storage.getChatMessages(req.params.roomId, limit));
   });
+  app.get("/api/room/:roomId/state", async (req, res) => res.json((await storage.getRoomState(req.params.roomId)) || null));
 
-  app.get("/api/room/:roomId/state", async (req, res) => {
-    res.json((await storage.getRoomState(req.params.roomId)) || null);
-  });
-
-  // AI chat (supervisor)
+  // AI supervisor chat
   app.post("/api/ai/chat", async (req, res) => {
     try {
       const { messages } = req.body;
-      if (!Array.isArray(messages)) return res.status(400).json({ error: "Messages must be array" });
-      const text = await generateResearchResponse(messages);
-      res.json({ text });
+      if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
+      res.json({ text: await generateResearchResponse(messages) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "AI unavailable" });
     }
   });
 
-  // RER: start a pipeline task
+  // RER: start pipeline
   app.post("/api/rer/start", async (req, res) => {
     try {
       const { roomId, topic, mode = "sequential" } = req.body;
       if (!roomId || !topic) return res.status(400).json({ error: "roomId and topic required" });
 
       const taskId = randomUUID();
-      const task = await storage.createRerTask({
-        id: taskId, roomId, topic, mode, status: "running", currentStep: 0, totalSteps: 4,
-      });
+      const task = await storage.createRerTask({ id: taskId, roomId, topic, mode, status: "running", currentStep: 0, totalSteps: 4 });
 
-      // Create placeholder outputs for all 4 agents
+      // Create 4 placeholder agent outputs
       const agentOutputs = await Promise.all(
         TAB_ROLES.map((role, i) =>
           storage.createRerAgentOutput({ taskId, tabIndex: i, role, status: "idle", output: null, receivedInput: null })
         )
       );
 
-      // Broadcast task created
-      const broadcast = (msg: any) => {
-        wss.clients.forEach((client) => {
-          const ws = client as WSClient;
-          if (ws.roomId === roomId && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(msg));
-          }
-        });
-      };
-
+      const broadcast = (msg: any) => broadcastToRoom(roomId, msg);
       broadcast({ type: "rer-task-update", task: { ...task, agentOutputs } });
-
       res.json({ taskId, task, agentOutputs });
 
-      // Run the pipeline asynchronously
+      // Run pipeline async
       if (mode === "sequential") {
         runSequentialPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast);
       } else {
         runParallelPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast);
       }
     } catch (err: any) {
-      console.error("RER start error:", err);
       res.status(500).json({ error: err.message });
     }
   });
 
-  // RER: get task details
   app.get("/api/rer/:taskId", async (req, res) => {
     const task = await storage.getRerTask(req.params.taskId);
     if (!task) return res.status(404).json({ error: "Task not found" });
-    const agentOutputs = await storage.getTaskAgentOutputs(req.params.taskId);
-    res.json({ ...task, agentOutputs });
+    res.json({ ...task, agentOutputs: await storage.getTaskAgentOutputs(req.params.taskId) });
   });
 
   app.get("/api/room/:roomId/rer", async (req, res) => {
     const tasks = await storage.getRoomRerTasks(req.params.roomId);
-    const withOutputs = await Promise.all(
-      tasks.map(async t => ({ ...t, agentOutputs: await storage.getTaskAgentOutputs(t.id) }))
-    );
-    res.json(withOutputs);
+    res.json(await Promise.all(tasks.map(async t => ({ ...t, agentOutputs: await storage.getTaskAgentOutputs(t.id) }))));
   });
 
   return httpServer;
 }
 
+// ─── SEQUENTIAL: Tab1 → Tab2 → Tab3 → Tab4, each gets previous tab's full report ───
 async function runSequentialPipeline(
   taskId: string, roomId: string, topic: string,
-  outputIds: string[], broadcast: (msg: any) => void
+  outputIds: string[], broadcast: (m: any) => void
 ) {
-  const completedOutputs: { role: string; output: string }[] = [];
+  let previousReport: string | null = null;
 
-  for (let i = 0; i < TAB_ROLES.length; i++) {
-    const role = TAB_ROLES[i];
+  for (let i = 0; i < 4; i++) {
+    const tabNumber = i + 1;
     const outputId = outputIds[i];
 
-    // Build receivedInput summary for display
-    const inputSummary = completedOutputs.length > 0
-      ? completedOutputs.map(o => `[${o.role.toUpperCase()}]: ${o.output.slice(0, 200)}…`).join("\n\n")
-      : `Topic: ${topic}`;
+    // Show what this tab received
+    const receivedSummary = previousReport
+      ? `Received Tab ${i}'s report (${previousReport.split(/\s+/).length} words)`
+      : `Starting fresh on topic: "${topic}"`;
 
-    await storage.updateRerAgentOutput(outputId, { status: "thinking", receivedInput: inputSummary });
+    await storage.updateRerAgentOutput(outputId, { status: "thinking", receivedInput: receivedSummary });
     await storage.updateRerTask(taskId, { currentStep: i });
-
-    const snap1 = await storage.getRerTask(taskId);
-    const snaps1 = await storage.getTaskAgentOutputs(taskId);
-    broadcast({ type: "rer-task-update", task: { ...snap1, agentOutputs: snaps1 } });
+    await broadcastState(taskId, broadcast);
 
     try {
-      // Pass ALL previous outputs so each agent has full context
-      const result = await runAgentStep(role, topic, completedOutputs);
-      await storage.updateRerAgentOutput(outputId, { status: "done", output: result });
-      completedOutputs.push({ role, output: result });
+      // Each tab gets the PREVIOUS tab's full report as input
+      const result = await runTabCycle(tabNumber, topic, previousReport);
 
+      await storage.updateRerAgentOutput(outputId, { status: "done", output: result });
       await storage.updateRerTask(taskId, { currentStep: i + 1 });
-      const snap2 = await storage.getRerTask(taskId);
-      const snaps2 = await storage.getTaskAgentOutputs(taskId);
-      broadcast({ type: "rer-task-update", task: { ...snap2, agentOutputs: snaps2 } });
+      await broadcastState(taskId, broadcast);
+
+      // This tab's report becomes the next tab's input
+      previousReport = result;
     } catch (err: any) {
-      await storage.updateRerAgentOutput(outputId, { status: "error", output: `Error: ${err.message}` });
+      console.error(`Tab ${tabNumber} error:`, err);
+      await storage.updateRerAgentOutput(outputId, {
+        status: "error",
+        output: `Tab ${tabNumber} encountered an error: ${err.message}`,
+      });
       await storage.updateRerTask(taskId, { status: "error" });
-      const snap = await storage.getRerTask(taskId);
-      const snaps = await storage.getTaskAgentOutputs(taskId);
-      broadcast({ type: "rer-task-update", task: { ...snap, agentOutputs: snaps } });
+      await broadcastState(taskId, broadcast);
       return;
     }
   }
 
   await storage.updateRerTask(taskId, { status: "done", completedAt: new Date(), currentStep: 4 });
-  const finalTask = await storage.getRerTask(taskId);
-  const finalOutputs = await storage.getTaskAgentOutputs(taskId);
-  broadcast({ type: "rer-task-update", task: { ...finalTask, agentOutputs: finalOutputs } });
+  await broadcastState(taskId, broadcast);
   broadcast({ type: "rer-complete", taskId, roomId });
 }
 
+// ─── PARALLEL: All 4 tabs run simultaneously on topic, then do cross-enhancement ───
 async function runParallelPipeline(
   taskId: string, roomId: string, topic: string,
-  outputIds: string[], broadcast: (msg: any) => void
+  outputIds: string[], broadcast: (m: any) => void
 ) {
-  // CYCLE 1: All 4 agents work independently on the topic
+  // Round 1: All tabs research the topic independently
   await Promise.all(outputIds.map(id =>
-    storage.updateRerAgentOutput(id, { status: "thinking", receivedInput: `Topic: ${topic}` })
+    storage.updateRerAgentOutput(id, { status: "thinking", receivedInput: `Topic: "${topic}" — Initial independent research` })
   ));
   await storage.updateRerTask(taskId, { currentStep: 1 });
-  const snap1 = await storage.getRerTask(taskId);
-  const out1 = await storage.getTaskAgentOutputs(taskId);
-  broadcast({ type: "rer-task-update", task: { ...snap1, agentOutputs: out1 } });
+  await broadcastState(taskId, broadcast);
 
-  const cycle1Results = await Promise.allSettled(
-    TAB_ROLES.map(role => runAgentStep(role, topic, []))
+  const round1 = await Promise.allSettled(
+    [1, 2, 3, 4].map(tabNum => runTabCycle(tabNum, topic, null))
   );
 
-  const cycle1Outputs: { role: string; output: string }[] = [];
-  for (let i = 0; i < cycle1Results.length; i++) {
-    const r = cycle1Results[i];
+  const round1Results: (string | null)[] = [];
+  for (let i = 0; i < 4; i++) {
+    const r = round1[i];
     if (r.status === "fulfilled") {
       await storage.updateRerAgentOutput(outputIds[i], { status: "done", output: r.value });
-      cycle1Outputs.push({ role: TAB_ROLES[i], output: r.value });
+      round1Results.push(r.value);
     } else {
       await storage.updateRerAgentOutput(outputIds[i], { status: "error", output: `Error: ${r.reason}` });
-      cycle1Outputs.push({ role: TAB_ROLES[i], output: "" });
+      round1Results.push(null);
     }
   }
 
   await storage.updateRerTask(taskId, { currentStep: 2 });
-  const snap2 = await storage.getRerTask(taskId);
-  const out2 = await storage.getTaskAgentOutputs(taskId);
-  broadcast({ type: "rer-task-update", task: { ...snap2, agentOutputs: out2 } });
+  await broadcastState(taskId, broadcast);
 
-  // CYCLE 2: Each agent re-runs with ALL other agents' outputs as context
-  const validCycle1 = cycle1Outputs.filter(o => o.output);
-  const cycle2 = outputIds.map(async (id, i) => {
-    const role = TAB_ROLES[i];
-    // Each agent gets all outputs from cycle 1 including other agents
-    const inputSummary = validCycle1.map(o => `[${o.role.toUpperCase()} - Cycle 1]: ${o.output.slice(0, 300)}…`).join("\n\n");
-    await storage.updateRerAgentOutput(id, { status: "thinking", receivedInput: inputSummary });
+  // Round 2: Each tab reviews ALL other tabs' outputs and produces enhanced version
+  const validOutputs = round1Results.filter(Boolean) as string[];
+  const combinedContext = validOutputs.map((o, i) =>
+    `=== TAB ${i + 1} ROUND 1 OUTPUT ===\n${o}`
+  ).join("\n\n");
 
-    const snap = await storage.getRerTask(taskId);
-    const snaps = await storage.getTaskAgentOutputs(taskId);
-    broadcast({ type: "rer-task-update", task: { ...snap, agentOutputs: snaps } });
+  await Promise.all(outputIds.map((id, i) =>
+    storage.updateRerAgentOutput(id, {
+      status: "thinking",
+      receivedInput: `Round 2: Received all ${validOutputs.length} tabs' outputs. Cross-enhancing…`,
+    })
+  ));
+  await broadcastState(taskId, broadcast);
 
-    try {
-      const result = await runAgentStep(role, topic, validCycle1);
-      await storage.updateRerAgentOutput(id, { status: "done", output: result });
-    } catch (err: any) {
-      await storage.updateRerAgentOutput(id, { status: "error", output: `Error: ${err.message}` });
+  const round2 = await Promise.allSettled(
+    [1, 2, 3, 4].map(tabNum =>
+      runTabCycle(tabNum, topic, combinedContext)
+    )
+  );
+
+  for (let i = 0; i < 4; i++) {
+    const r = round2[i];
+    if (r.status === "fulfilled") {
+      await storage.updateRerAgentOutput(outputIds[i], { status: "done", output: r.value });
+    } else {
+      await storage.updateRerAgentOutput(outputIds[i], { status: "error", output: `Round 2 error: ${r.reason}` });
     }
-  });
-
-  await Promise.all(cycle2);
+  }
 
   await storage.updateRerTask(taskId, { status: "done", completedAt: new Date(), currentStep: 4 });
-  const finalTask = await storage.getRerTask(taskId);
-  const finalOutputs = await storage.getTaskAgentOutputs(taskId);
-  broadcast({ type: "rer-task-update", task: { ...finalTask, agentOutputs: finalOutputs } });
+  await broadcastState(taskId, broadcast);
   broadcast({ type: "rer-complete", taskId, roomId });
+}
+
+async function broadcastState(taskId: string, broadcast: (m: any) => void) {
+  const task = await storage.getRerTask(taskId);
+  const agentOutputs = await storage.getTaskAgentOutputs(taskId);
+  broadcast({ type: "rer-task-update", task: { ...task, agentOutputs } });
 }
