@@ -252,34 +252,40 @@ async function runSequentialPipeline(
   taskId: string, roomId: string, topic: string,
   outputIds: string[], broadcast: (msg: any) => void
 ) {
-  let prevOutput: string | undefined;
+  const completedOutputs: { role: string; output: string }[] = [];
 
   for (let i = 0; i < TAB_ROLES.length; i++) {
     const role = TAB_ROLES[i];
     const outputId = outputIds[i];
 
-    // Mark as thinking
-    const thinking = await storage.updateRerAgentOutput(outputId, { status: "thinking", receivedInput: prevOutput || null });
+    // Build receivedInput summary for display
+    const inputSummary = completedOutputs.length > 0
+      ? completedOutputs.map(o => `[${o.role.toUpperCase()}]: ${o.output.slice(0, 200)}…`).join("\n\n")
+      : `Topic: ${topic}`;
+
+    await storage.updateRerAgentOutput(outputId, { status: "thinking", receivedInput: inputSummary });
     await storage.updateRerTask(taskId, { currentStep: i });
-    const task = await storage.getRerTask(taskId);
-    const allOutputs = await storage.getTaskAgentOutputs(taskId);
-    broadcast({ type: "rer-task-update", task: { ...task, agentOutputs: allOutputs } });
+
+    const snap1 = await storage.getRerTask(taskId);
+    const snaps1 = await storage.getTaskAgentOutputs(taskId);
+    broadcast({ type: "rer-task-update", task: { ...snap1, agentOutputs: snaps1 } });
 
     try {
-      const result = await runAgentStep(role, topic, prevOutput);
-      const done = await storage.updateRerAgentOutput(outputId, { status: "done", output: result });
-      prevOutput = result;
+      // Pass ALL previous outputs so each agent has full context
+      const result = await runAgentStep(role, topic, completedOutputs);
+      await storage.updateRerAgentOutput(outputId, { status: "done", output: result });
+      completedOutputs.push({ role, output: result });
 
       await storage.updateRerTask(taskId, { currentStep: i + 1 });
-      const updatedTask = await storage.getRerTask(taskId);
-      const updatedOutputs = await storage.getTaskAgentOutputs(taskId);
-      broadcast({ type: "rer-task-update", task: { ...updatedTask, agentOutputs: updatedOutputs } });
+      const snap2 = await storage.getRerTask(taskId);
+      const snaps2 = await storage.getTaskAgentOutputs(taskId);
+      broadcast({ type: "rer-task-update", task: { ...snap2, agentOutputs: snaps2 } });
     } catch (err: any) {
       await storage.updateRerAgentOutput(outputId, { status: "error", output: `Error: ${err.message}` });
       await storage.updateRerTask(taskId, { status: "error" });
-      const updatedTask = await storage.getRerTask(taskId);
-      const updatedOutputs = await storage.getTaskAgentOutputs(taskId);
-      broadcast({ type: "rer-task-update", task: { ...updatedTask, agentOutputs: updatedOutputs } });
+      const snap = await storage.getRerTask(taskId);
+      const snaps = await storage.getTaskAgentOutputs(taskId);
+      broadcast({ type: "rer-task-update", task: { ...snap, agentOutputs: snaps } });
       return;
     }
   }
@@ -295,55 +301,57 @@ async function runParallelPipeline(
   taskId: string, roomId: string, topic: string,
   outputIds: string[], broadcast: (msg: any) => void
 ) {
-  // All 4 agents research simultaneously first (cycle 1)
-  const markThinking = outputIds.map((id, i) =>
+  // CYCLE 1: All 4 agents work independently on the topic
+  await Promise.all(outputIds.map(id =>
     storage.updateRerAgentOutput(id, { status: "thinking", receivedInput: `Topic: ${topic}` })
-  );
-  await Promise.all(markThinking);
+  ));
   await storage.updateRerTask(taskId, { currentStep: 1 });
-  const task1 = await storage.getRerTask(taskId);
+  const snap1 = await storage.getRerTask(taskId);
   const out1 = await storage.getTaskAgentOutputs(taskId);
-  broadcast({ type: "rer-task-update", task: { ...task1, agentOutputs: out1 } });
+  broadcast({ type: "rer-task-update", task: { ...snap1, agentOutputs: out1 } });
 
-  // Run all 4 agents in parallel
-  const results = await Promise.allSettled(
-    TAB_ROLES.map((role) => runAgentStep(role, topic))
+  const cycle1Results = await Promise.allSettled(
+    TAB_ROLES.map(role => runAgentStep(role, topic, []))
   );
 
-  const outputs: string[] = [];
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
+  const cycle1Outputs: { role: string; output: string }[] = [];
+  for (let i = 0; i < cycle1Results.length; i++) {
+    const r = cycle1Results[i];
     if (r.status === "fulfilled") {
       await storage.updateRerAgentOutput(outputIds[i], { status: "done", output: r.value });
-      outputs.push(r.value);
+      cycle1Outputs.push({ role: TAB_ROLES[i], output: r.value });
     } else {
       await storage.updateRerAgentOutput(outputIds[i], { status: "error", output: `Error: ${r.reason}` });
-      outputs.push("");
+      cycle1Outputs.push({ role: TAB_ROLES[i], output: "" });
     }
   }
 
   await storage.updateRerTask(taskId, { currentStep: 2 });
+  const snap2 = await storage.getRerTask(taskId);
+  const out2 = await storage.getTaskAgentOutputs(taskId);
+  broadcast({ type: "rer-task-update", task: { ...snap2, agentOutputs: out2 } });
 
-  // Cycle 2: Each agent now enhances based on all other agents' outputs
-  const combined = outputs.filter(Boolean).join("\n\n---\n\n");
-  const cycle2Prompt = `All agents have completed their initial research. Here are all outputs:\n\n${combined}\n\nNow synthesize and enhance based on ALL of the above.`;
-
-  const enhance = outputIds.map(async (id, i) => {
+  // CYCLE 2: Each agent re-runs with ALL other agents' outputs as context
+  const validCycle1 = cycle1Outputs.filter(o => o.output);
+  const cycle2 = outputIds.map(async (id, i) => {
     const role = TAB_ROLES[i];
-    await storage.updateRerAgentOutput(id, { status: "thinking", receivedInput: cycle2Prompt });
-    const task2 = await storage.getRerTask(taskId);
-    const out2 = await storage.getTaskAgentOutputs(taskId);
-    broadcast({ type: "rer-task-update", task: { ...task2, agentOutputs: out2 } });
+    // Each agent gets all outputs from cycle 1 including other agents
+    const inputSummary = validCycle1.map(o => `[${o.role.toUpperCase()} - Cycle 1]: ${o.output.slice(0, 300)}…`).join("\n\n");
+    await storage.updateRerAgentOutput(id, { status: "thinking", receivedInput: inputSummary });
+
+    const snap = await storage.getRerTask(taskId);
+    const snaps = await storage.getTaskAgentOutputs(taskId);
+    broadcast({ type: "rer-task-update", task: { ...snap, agentOutputs: snaps } });
 
     try {
-      const result = await runAgentStep(role, topic, cycle2Prompt);
+      const result = await runAgentStep(role, topic, validCycle1);
       await storage.updateRerAgentOutput(id, { status: "done", output: result });
     } catch (err: any) {
       await storage.updateRerAgentOutput(id, { status: "error", output: `Error: ${err.message}` });
     }
   });
 
-  await Promise.all(enhance);
+  await Promise.all(cycle2);
 
   await storage.updateRerTask(taskId, { status: "done", completedAt: new Date(), currentStep: 4 });
   const finalTask = await storage.getRerTask(taskId);
