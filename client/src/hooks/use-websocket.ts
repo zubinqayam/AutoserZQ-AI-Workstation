@@ -1,17 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { Room, Member, ChatMessage, RoomState } from "@shared/schema";
+import type { Room, Member, ChatMessage, RoomState, RerTask, RerAgentOutput } from "@shared/schema";
 
-interface WebSocketMessage {
-  type: string;
-  [key: string]: any;
-}
-
-interface InitMessage {
-  type: "init";
-  room: Room;
-  state: RoomState | null;
-  messages: ChatMessage[];
-  members: Member[];
+export interface RerTaskWithOutputs extends Omit<RerTask, 'completedAt'> {
+  completedAt: string | null;
+  agentOutputs: RerAgentOutput[];
 }
 
 interface UseWebSocketReturn {
@@ -20,7 +12,8 @@ interface UseWebSocketReturn {
   members: Member[];
   messages: ChatMessage[];
   roomState: RoomState | null;
-  sendMessage: (message: WebSocketMessage) => void;
+  rerTasks: RerTaskWithOutputs[];
+  sendMessage: (message: any) => void;
   joinRoom: (roomId: string, uid: string, displayName: string) => void;
 }
 
@@ -30,15 +23,29 @@ export function useWebSocket(): UseWebSocketReturn {
   const [members, setMembers] = useState<Member[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
-  
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
-  const heartbeatIntervalRef = useRef<NodeJS.Timeout>();
+  const [rerTasks, setRerTasks] = useState<RerTaskWithOutputs[]>([]);
 
-  const sendMessage = useCallback((message: WebSocketMessage) => {
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef<NodeJS.Timeout>();
+  const heartbeatRef = useRef<NodeJS.Timeout>();
+  const roomInfoRef = useRef<{ roomId: string; uid: string; displayName: string } | null>(null);
+
+  const sendMessage = useCallback((message: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(message));
     }
+  }, []);
+
+  const updateRerTask = useCallback((updatedTask: RerTaskWithOutputs) => {
+    setRerTasks(prev => {
+      const idx = prev.findIndex(t => t.id === updatedTask.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = updatedTask;
+        return next;
+      }
+      return [updatedTask, ...prev];
+    });
   }, []);
 
   const connect = useCallback(() => {
@@ -47,106 +54,76 @@ export function useWebSocket(): UseWebSocketReturn {
 
     ws.onopen = () => {
       setConnected(true);
+      if (roomInfoRef.current) {
+        const { roomId, uid, displayName } = roomInfoRef.current;
+        ws.send(JSON.stringify({ type: "join", roomId, uid, displayName }));
+      }
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-
         switch (data.type) {
           case "init":
-            const initData = data as InitMessage;
-            setRoom(initData.room);
-            setMembers(initData.members);
-            setMessages(initData.messages);
-            setRoomState(initData.state);
+            setRoom(data.room);
+            setMembers(data.members);
+            setMessages(data.messages);
+            setRoomState(data.state);
+            setRerTasks(data.rerTasks || []);
             break;
-
           case "chat":
             setMessages(prev => [...prev, data.message]);
             break;
-
           case "state":
             setRoomState(data.state);
             break;
-
           case "member-update":
             setMembers(data.members);
             break;
-
           case "room-update":
             setRoom(data.room);
             break;
-
+          case "rer-task-update":
+            updateRerTask(data.task);
+            break;
           case "error":
-            console.error("WebSocket error:", data.message);
+            console.error("WS server error:", data.message);
             break;
         }
-      } catch (error) {
-        console.error("Failed to parse WebSocket message:", error);
+      } catch (e) {
+        console.error("WS parse error:", e);
       }
     };
 
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
+    ws.onerror = (e) => console.error("WS error:", e);
 
     ws.onclose = () => {
       setConnected(false);
-      if (heartbeatIntervalRef.current) {
-        clearInterval(heartbeatIntervalRef.current);
-      }
-      
-      reconnectTimeoutRef.current = setTimeout(() => {
-        connect();
-      }, 3000);
+      clearInterval(heartbeatRef.current);
+      reconnectRef.current = setTimeout(() => connect(), 3000);
     };
 
     wsRef.current = ws;
-  }, []);
+  }, [updateRerTask]);
 
   const joinRoom = useCallback((roomId: string, uid: string, displayName: string) => {
-    sendMessage({
-      type: "join",
-      roomId,
-      uid,
-      displayName,
-    });
+    roomInfoRef.current = { roomId, uid, displayName };
+    sendMessage({ type: "join", roomId, uid, displayName });
 
-    if (heartbeatIntervalRef.current) {
-      clearInterval(heartbeatIntervalRef.current);
-    }
-
-    heartbeatIntervalRef.current = setInterval(() => {
-      sendMessage({
-        type: "heartbeat",
-        roomId,
-        uid,
-      });
+    clearInterval(heartbeatRef.current);
+    heartbeatRef.current = setInterval(() => {
+      sendMessage({ type: "heartbeat", roomId, uid });
     }, 20000);
   }, [sendMessage]);
 
   useEffect(() => {
     connect();
-
     return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (heartbeatIntervalRef.current) {
-        clearInterval(heartbeatIntervalRef.current);
-      }
+      clearTimeout(reconnectRef.current);
+      clearInterval(heartbeatRef.current);
       wsRef.current?.close();
     };
   }, [connect]);
 
-  return {
-    connected,
-    room,
-    members,
-    messages,
-    roomState,
-    sendMessage,
-    joinRoom,
-  };
+  return { connected, room, members, messages, roomState, rerTasks, sendMessage, joinRoom };
 }

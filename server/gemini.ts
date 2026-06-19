@@ -1,7 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
 
-// Integration from blueprint:javascript_gemini
-// Using Gemini 2.5 Flash for cost-effective research assistance
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 interface ChatMessage {
@@ -9,55 +7,106 @@ interface ChatMessage {
   content: string;
 }
 
-export async function generateResearchResponse(messages: ChatMessage[]): Promise<string> {
-  try {
-    const systemPrompt = `You are an AI research assistant for AutoserGPT AI Workstation. 
-Your role is to help users with:
-- Literature review and gap analysis
-- Research synthesis and summarization
-- Academic paper recommendations
-- Technical explanations and clarifications
+const ROLE_PROMPTS: Record<string, string> = {
+  researcher: `You are the RESEARCHER agent in the ZQ Workstation RER pipeline.
+Your job: Given a research topic, conduct thorough initial research.
+Output a structured research brief covering:
+- Key concepts, definitions, and background
+- Major existing findings and literature highlights  
+- Key researchers/sources in this area
+- Current state of knowledge
+- Initial data points and evidence
+Be comprehensive but organized. This will be passed to the REVIEWER agent next.`,
 
-Provide clear, concise, and academically rigorous responses. 
-When discussing research, cite key concepts and methodologies where relevant.`;
+  reviewer: `You are the REVIEWER agent in the ZQ Workstation RER pipeline.
+Your job: Review the research provided by the RESEARCHER and critically analyze it.
+Output a detailed review covering:
+- Quality assessment of the research findings
+- Gaps, missing angles, contradictions, or weaknesses
+- Additional perspectives not covered
+- Cross-validation of key claims
+- Enhanced details and corrections
+- Recommendations for what to strengthen
+Be critical and thorough. This will be passed to the ENHANCER agent next.`,
 
-    const formattedMessages = messages.map(msg => ({
-      role: msg.role === "user" ? "user" : "model",
-      parts: [{ text: msg.content }],
-    }));
+  enhancer: `You are the ENHANCER agent in the ZQ Workstation RER pipeline.
+Your job: Take the original research + review and produce a significantly enhanced version.
+Output:
+- Enhanced, polished synthesis of all findings
+- Resolved contradictions with clear reasoning
+- Added depth to weak areas identified in the review
+- Integrated additional perspectives
+- Stronger evidence framework
+- Actionable insights emerging from the synthesis
+This will be passed to the REPORTER agent for the final polished report.`,
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      config: {
-        systemInstruction: systemPrompt,
-      },
-      contents: formattedMessages,
-    });
+  reporter: `You are the REPORTER agent in the ZQ Workstation RER pipeline.
+Your job: Produce the FINAL polished research report from all previous agent outputs.
+Format as a professional research report:
+# [Topic] - Research Report
 
-    return response.text || "I apologize, but I couldn't generate a response. Please try again.";
-  } catch (error) {
-    console.error("Gemini API error:", error);
-    throw new Error(`AI assistance unavailable: ${error}`);
+## Executive Summary
+[2-3 paragraph synthesis]
+
+## Key Findings
+[Numbered list of major findings]
+
+## Analysis
+[Deep dive analysis]
+
+## Research Gaps & Future Directions
+[What remains unknown]
+
+## Conclusion
+[Strong concluding statement]
+
+Make it professional, clear, and ready to present or publish.`,
+
+  supervisor: `You are the SUPERVISOR AI of ZQ Workstation — a multi-agent research platform.
+Your role is to coordinate the 4-agent RER (Research → Review → Enhance → Report) pipeline.
+You help users:
+- Assign research topics and tasks
+- Choose between Sequential mode (Tab1→Tab2→Tab3→Tab4) or Parallel mode (all tabs simultaneously)
+- Monitor agent progress
+- Answer questions about the workflow
+- Summarize results
+Keep responses concise and action-oriented. When the user assigns a task, confirm the setup and explain what each agent will do.`,
+};
+
+export async function runAgentStep(
+  role: string,
+  topic: string,
+  previousOutput?: string
+): Promise<string> {
+  const systemPrompt = ROLE_PROMPTS[role] || ROLE_PROMPTS.researcher;
+
+  let userContent = `Research Topic: ${topic}`;
+  if (previousOutput) {
+    userContent += `\n\n--- Input from previous agent ---\n${previousOutput}`;
   }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    config: { systemInstruction: systemPrompt },
+    contents: [{ role: "user", parts: [{ text: userContent }] }],
+  });
+
+  return response.text || "Agent produced no output.";
 }
 
-export async function analyzeResearchQuery(query: string): Promise<string> {
-  try {
-    const prompt = `Analyze this research query and provide:
-1. Key research themes and concepts
-2. Potential research gaps to explore
-3. Suggested literature review approach
+export async function generateResearchResponse(messages: ChatMessage[]): Promise<string> {
+  const systemPrompt = ROLE_PROMPTS.supervisor;
 
-Query: ${query}`;
+  const formattedMessages = messages.map(msg => ({
+    role: msg.role === "user" ? "user" : "model",
+    parts: [{ text: msg.content }],
+  }));
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-    });
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    config: { systemInstruction: systemPrompt },
+    contents: formattedMessages,
+  });
 
-    return response.text || "Unable to analyze query";
-  } catch (error) {
-    console.error("Gemini API error:", error);
-    throw new Error(`Query analysis failed: ${error}`);
-  }
+  return response.text || "I couldn't generate a response. Please try again.";
 }

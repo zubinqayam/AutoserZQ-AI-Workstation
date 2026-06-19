@@ -41,24 +41,37 @@ export const roomStates = pgTable("room_states", {
   updatedBy: varchar("updated_by"),
 });
 
-export const insertRoomSchema = createInsertSchema(rooms).omit({
-  createdAt: true,
+// RER Pipeline Tasks
+export const rerTasks = pgTable("rer_tasks", {
+  id: varchar("id").primaryKey(),
+  roomId: varchar("room_id").notNull(),
+  topic: text("topic").notNull(),
+  mode: varchar("mode").notNull().default("sequential"), // "sequential" | "parallel"
+  status: varchar("status").notNull().default("pending"), // "pending" | "running" | "done" | "error"
+  currentStep: integer("current_step").notNull().default(0),
+  totalSteps: integer("total_steps").notNull().default(4),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
 });
 
-export const insertMemberSchema = createInsertSchema(members).omit({
-  id: true,
-  lastSeen: true,
+// RER Agent outputs per tab
+export const rerAgentOutputs = pgTable("rer_agent_outputs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  taskId: varchar("task_id").notNull(),
+  tabIndex: integer("tab_index").notNull(),
+  role: varchar("role").notNull(), // "researcher" | "reviewer" | "enhancer" | "reporter"
+  status: varchar("status").notNull().default("idle"), // "idle" | "thinking" | "done" | "error"
+  output: text("output"),
+  receivedInput: text("received_input"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({
-  id: true,
-  createdAt: true,
-});
-
-export const insertRoomStateSchema = createInsertSchema(roomStates).omit({
-  id: true,
-  updatedAt: true,
-});
+export const insertRoomSchema = createInsertSchema(rooms).omit({ createdAt: true });
+export const insertMemberSchema = createInsertSchema(members).omit({ id: true, lastSeen: true });
+export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({ id: true, createdAt: true });
+export const insertRoomStateSchema = createInsertSchema(roomStates).omit({ id: true, updatedAt: true });
+export const insertRerTaskSchema = createInsertSchema(rerTasks).omit({ createdAt: true, completedAt: true });
+export const insertRerAgentOutputSchema = createInsertSchema(rerAgentOutputs).omit({ id: true, createdAt: true });
 
 export type Room = typeof rooms.$inferSelect;
 export type InsertRoom = z.infer<typeof insertRoomSchema>;
@@ -68,3 +81,10 @@ export type ChatMessage = typeof chatMessages.$inferSelect;
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type RoomState = typeof roomStates.$inferSelect;
 export type InsertRoomState = z.infer<typeof insertRoomStateSchema>;
+export type RerTask = typeof rerTasks.$inferSelect;
+export type InsertRerTask = z.infer<typeof insertRerTaskSchema>;
+export type RerAgentOutput = typeof rerAgentOutputs.$inferSelect;
+export type InsertRerAgentOutput = z.infer<typeof insertRerAgentOutputSchema>;
+
+export const TAB_ROLES = ["researcher", "reviewer", "enhancer", "reporter"] as const;
+export type TabRole = typeof TAB_ROLES[number];
