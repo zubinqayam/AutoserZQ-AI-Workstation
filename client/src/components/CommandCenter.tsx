@@ -1,11 +1,17 @@
-import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Play, Zap, GitBranch, ChevronDown, ChevronRight, CheckCircle2, Loader2 } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  Send, Bot, User, Play, Zap, GitBranch, ChevronDown, ChevronRight,
+  CheckCircle2, Loader2, Mic, MicOff, Camera, Paperclip, Link2,
+  Upload, FolderOpen, X, ChevronLeft, ChevronRight as ChevronRightIcon,
+  File, Image as ImageIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import type { ChatMessage } from "@shared/schema";
 import type { RerTaskWithOutputs } from "@/hooks/use-websocket";
+import { useToast } from "@/hooks/use-toast";
 
 interface CommandCenterProps {
   messages: ChatMessage[];
@@ -16,46 +22,150 @@ interface CommandCenterProps {
   onStartRer: (topic: string, mode: "sequential" | "parallel") => void;
 }
 
+interface Attachment {
+  id: string;
+  name: string;
+  type: "file" | "image" | "link" | "camera";
+  preview?: string;
+  url?: string;
+  size?: number;
+}
+
 export default function CommandCenter({
-  messages,
-  currentUserId,
-  roomId,
-  rerTasks,
-  onSendMessage,
-  onStartRer,
+  messages, currentUserId, roomId, rerTasks, onSendMessage, onStartRer,
 }: CommandCenterProps) {
+  const { toast } = useToast();
   const [input, setInput] = useState("");
   const [rerMode, setRerMode] = useState<"sequential" | "parallel">("sequential");
   const [activeTab, setActiveTab] = useState<"chat" | "tasks">("chat");
+  const [collapsed, setCollapsed] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [linkMode, setLinkMode] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const recRef = useRef<any>(null);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
   const handleSend = () => {
-    if (!input.trim()) return;
-    onSendMessage(input.trim());
-    setInput("");
+    if (!input.trim() && attachments.length === 0) return;
+    let text = input.trim();
+    if (attachments.length > 0) {
+      const attStr = attachments.map(a =>
+        a.type === "link" ? `[Link: ${a.url}]` : `[${a.type === "image" ? "Image" : "File"}: ${a.name}]`
+      ).join(" ");
+      text = text ? `${text}\n${attStr}` : attStr;
+    }
+    onSendMessage(text);
+    setInput(""); setAttachments([]);
   };
 
   const handleStartRer = () => {
     if (!input.trim()) return;
     onStartRer(input.trim(), rerMode);
-    setInput("");
+    setInput(""); setAttachments([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
+  // ── Voice ────────────────────────────────────────────────────────────────────
+  const toggleVoice = () => {
+    if (voiceOn) { recRef.current?.stop(); setVoiceOn(false); return; }
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { toast({ title: "Voice not supported in this browser" }); return; }
+    const r = new SR(); r.continuous = false; r.interimResults = false; r.lang = "en-US";
+    r.onresult = (e: any) => { setInput(p => p + (p ? " " : "") + e.results[0][0].transcript); setVoiceOn(false); };
+    r.onerror = () => setVoiceOn(false); r.onend = () => setVoiceOn(false);
+    recRef.current = r; r.start(); setVoiceOn(true);
+  };
+
+  // ── Camera ───────────────────────────────────────────────────────────────────
+  const captureCamera = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const video = document.createElement("video");
+      video.srcObject = stream; video.play();
+      await new Promise(r => video.onplaying = r);
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+      canvas.getContext("2d")!.drawImage(video, 0, 0);
+      stream.getTracks().forEach(t => t.stop());
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+      setAttachments(p => [...p, { id: Date.now().toString(), name: "camera-capture.jpg", type: "camera", preview: dataUrl }]);
+      toast({ title: "Camera capture added" });
+    } catch { toast({ title: "Camera access denied", variant: "destructive" }); }
+  }, [toast]);
+
+  // ── File / Folder ────────────────────────────────────────────────────────────
+  const processFiles = (files: FileList | null) => {
+    if (!files) return;
+    Array.from(files).forEach(file => {
+      const isImg = file.type.startsWith("image/");
+      if (isImg) {
+        const reader = new FileReader();
+        reader.onload = e => setAttachments(p => [...p, {
+          id: Date.now().toString(), name: file.name, type: "image",
+          preview: e.target?.result as string, size: file.size,
+        }]);
+        reader.readAsDataURL(file);
+      } else {
+        setAttachments(p => [...p, { id: Date.now().toString(), name: file.name, type: "file", size: file.size }]);
+      }
+    });
+  };
+
+  // ── Drag and Drop ────────────────────────────────────────────────────────────
+  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
+  const onDragLeave = () => setIsDragging(false);
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setIsDragging(false);
+    if (e.dataTransfer.files.length) { processFiles(e.dataTransfer.files); return; }
+    const url = e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain");
+    if (url?.startsWith("http")) setAttachments(p => [...p, { id: Date.now().toString(), name: url, type: "link", url }]);
+  };
+
+  const addLink = () => {
+    if (!linkUrl.trim()) return;
+    setAttachments(p => [...p, { id: Date.now().toString(), name: linkUrl.trim(), type: "link", url: linkUrl.trim() }]);
+    setLinkUrl(""); setLinkMode(false);
+  };
+
+  const removeAttachment = (id: string) => setAttachments(p => p.filter(a => a.id !== id));
+
   const activeTask = rerTasks.find(t => t.status === "running");
-  const doneTasks = rerTasks.filter(t => t.status === "done");
+
+  // ── Collapsed state — just show a vertical tab ───────────────────────────────
+  if (collapsed) {
+    return (
+      <div className="h-full flex flex-col items-center justify-between bg-card border-l border-border py-3" style={{ width: "40px", minWidth: "40px" }}>
+        <button
+          className="flex items-center justify-center w-7 h-7 rounded-lg bg-primary/10 hover-elevate"
+          onClick={() => setCollapsed(false)}
+          title="Expand Command Center"
+          data-testid="btn-expand-cc"
+        >
+          <ChevronLeft className="w-4 h-4 text-primary" />
+        </button>
+        <div className="flex flex-col items-center gap-2">
+          <div className="w-1 h-16 rounded-full bg-border" />
+          <span className="text-[9px] text-muted-foreground font-mono" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>
+            COMMAND CENTER
+          </span>
+          <div className="w-1 h-16 rounded-full bg-border" />
+        </div>
+        {activeTask && <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />}
+        <div className="w-2" />
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border" style={{ width: "340px", minWidth: "340px" }}>
@@ -68,40 +178,33 @@ export default function CommandCenter({
           <span className="text-sm font-semibold text-card-foreground">Command Center</span>
           {activeTask && (
             <Badge variant="secondary" className="text-xs gap-1 ml-auto">
-              <Loader2 className="w-2.5 h-2.5 animate-spin" />
-              Running
+              <Loader2 className="w-2.5 h-2.5 animate-spin" /> Running
             </Badge>
           )}
+          <Button
+            variant="ghost" size="icon" className="h-6 w-6 ml-auto flex-shrink-0"
+            onClick={() => setCollapsed(true)}
+            title="Minimize"
+            data-testid="btn-collapse-cc"
+          >
+            <ChevronRightIcon className="w-3.5 h-3.5" />
+          </Button>
         </div>
         <p className="text-xs text-muted-foreground">Supervisor AI — assign tasks, monitor agents</p>
       </div>
 
       {/* Tab bar */}
-      <div className="flex border-b border-border">
-        <button
-          className={`flex-1 py-2 text-xs font-medium transition-colors ${
-            activeTab === "chat"
-              ? "text-primary border-b-2 border-primary"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          onClick={() => setActiveTab("chat")}
-          data-testid="tab-chat"
-        >
-          Chat
-        </button>
-        <button
-          className={`flex-1 py-2 text-xs font-medium transition-colors ${
-            activeTab === "tasks"
-              ? "text-primary border-b-2 border-primary"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          onClick={() => setActiveTab("tasks")}
-          data-testid="tab-tasks"
-        >
-          Tasks {rerTasks.length > 0 && `(${rerTasks.length})`}
-        </button>
+      <div className="flex border-b border-border flex-shrink-0">
+        {(["chat", "tasks"] as const).map(t => (
+          <button key={t}
+            className={`flex-1 py-2 text-xs font-medium transition-colors ${activeTab === t ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}
+            onClick={() => setActiveTab(t)} data-testid={`tab-${t}`}>
+            {t === "tasks" ? `Tasks${rerTasks.length > 0 ? ` (${rerTasks.length})` : ""}` : "Chat"}
+          </button>
+        ))}
       </div>
 
+      {/* ── CHAT TAB ──────────────────────────────────────────────────────────── */}
       {activeTab === "chat" && (
         <>
           <ScrollArea className="flex-1" ref={scrollRef as any}>
@@ -114,25 +217,21 @@ export default function CommandCenter({
                 </div>
               )}
               {messages.map((msg) => (
-                <div
-                  key={msg.id}
+                <div key={msg.id}
                   className={`flex gap-2 ${msg.authorUid === currentUserId ? "justify-end" : "justify-start"}`}
-                  data-testid={`message-${msg.id}`}
-                >
+                  data-testid={`message-${msg.id}`}>
                   {msg.authorUid !== currentUserId && (
                     <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
                       {msg.isAI ? <Bot className="w-3 h-3 text-primary" /> : <User className="w-3 h-3 text-muted-foreground" />}
                     </div>
                   )}
-                  <div
-                    className={`px-3 py-2 rounded-xl max-w-[85%] text-xs leading-relaxed ${
-                      msg.authorUid === currentUserId
-                        ? "bg-primary text-primary-foreground"
-                        : msg.isAI
-                        ? "bg-muted text-foreground"
-                        : "bg-background border border-border text-foreground"
-                    }`}
-                  >
+                  <div className={`px-3 py-2 rounded-xl max-w-[85%] text-xs leading-relaxed ${
+                    msg.authorUid === currentUserId
+                      ? "bg-primary text-primary-foreground"
+                      : msg.isAI
+                      ? "bg-muted text-foreground"
+                      : "bg-background border border-border text-foreground"
+                  }`}>
                     {msg.text}
                   </div>
                 </div>
@@ -140,73 +239,133 @@ export default function CommandCenter({
             </div>
           </ScrollArea>
 
-          {/* Input Area */}
-          <div className="p-3 border-t border-border space-y-2">
-            <Textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Enter research topic or chat with supervisor…"
-              className="resize-none text-xs min-h-[72px] bg-background/50"
-              data-testid="input-command"
-            />
-            <div className="flex items-center gap-2">
-              {/* RER Mode toggle */}
-              <div className="flex items-center gap-1 border border-border rounded-md p-0.5 bg-background/50">
+          {/* ── Input Area ─────────────────────────────────────────────────────── */}
+          <div className="border-t border-border flex-shrink-0">
+            {/* Attachment previews */}
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
+                {attachments.map(a => (
+                  <div key={a.id} className="relative flex items-center gap-1 bg-muted rounded-lg pl-1.5 pr-6 py-1 text-[10px] text-muted-foreground max-w-[140px]">
+                    {a.type === "image" || a.type === "camera"
+                      ? a.preview
+                        ? <img src={a.preview} className="w-4 h-4 rounded object-cover flex-shrink-0" />
+                        : <ImageIcon className="w-3 h-3 flex-shrink-0" />
+                      : a.type === "link"
+                      ? <Link2 className="w-3 h-3 flex-shrink-0 text-blue-400" />
+                      : <File className="w-3 h-3 flex-shrink-0" />}
+                    <span className="truncate">{a.name.length > 16 ? a.name.slice(0,14)+"…" : a.name}</span>
+                    <button className="absolute right-1 top-1/2 -translate-y-1/2" onClick={() => removeAttachment(a.id)}>
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Link input */}
+            {linkMode && (
+              <div className="flex gap-1 px-3 pt-2">
+                <input
+                  className="flex-1 bg-background border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50"
+                  placeholder="Paste URL…"
+                  value={linkUrl}
+                  onChange={e => setLinkUrl(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && addLink()}
+                  autoFocus
+                  data-testid="input-link"
+                />
+                <Button size="sm" className="h-7 px-2 text-xs" onClick={addLink}>Add</Button>
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setLinkMode(false)}>Cancel</Button>
+              </div>
+            )}
+
+            {/* Drop zone + textarea */}
+            <div
+              className={`relative mx-3 mt-2 rounded-xl border transition-colors ${isDragging ? "border-primary bg-primary/5" : "border-border"}`}
+              onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+            >
+              {isDragging && (
+                <div className="absolute inset-0 flex items-center justify-center rounded-xl z-10 pointer-events-none">
+                  <p className="text-xs text-primary font-semibold">Drop files or links here</p>
+                </div>
+              )}
+              <Textarea
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Research topic, question, or drop files…"
+                className="resize-none text-xs min-h-[64px] bg-transparent border-0 focus-visible:ring-0 rounded-xl"
+                data-testid="input-command"
+              />
+            </div>
+
+            {/* Media toolbar */}
+            <div className="flex items-center gap-0.5 px-3 pt-1.5 pb-1">
+              {/* Hidden file inputs */}
+              <input ref={fileInputRef} type="file" className="hidden" multiple
+                onChange={e => processFiles(e.target.files)} data-testid="input-file" />
+              <input ref={folderInputRef} type="file" className="hidden" multiple
+                {...{ webkitdirectory: "" } as any}
+                onChange={e => processFiles(e.target.files)} data-testid="input-folder" />
+
+              <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" title="Attach file"
+                onClick={() => fileInputRef.current?.click()} data-testid="btn-attach">
+                <Paperclip className="w-3.5 h-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" title="Upload folder"
+                onClick={() => folderInputRef.current?.click()} data-testid="btn-folder">
+                <FolderOpen className="w-3.5 h-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" title="Add link"
+                onClick={() => setLinkMode(v => !v)} data-testid="btn-link">
+                <Link2 className="w-3.5 h-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" title="Upload"
+                onClick={() => fileInputRef.current?.click()} data-testid="btn-upload">
+                <Upload className="w-3.5 h-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className={`h-7 w-7 flex-shrink-0 ${voiceOn ? "text-primary" : ""}`}
+                title="Voice input" onClick={toggleVoice} data-testid="btn-voice">
+                {voiceOn ? <MicOff className="w-3.5 h-3.5 animate-pulse text-primary" /> : <Mic className="w-3.5 h-3.5" />}
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" title="Camera capture"
+                onClick={captureCamera} data-testid="btn-camera">
+                <Camera className="w-3.5 h-3.5" />
+              </Button>
+
+              <div className="flex-1" />
+
+              {/* RER Mode + action buttons */}
+              <div className="flex items-center gap-1 border border-border rounded-md p-0.5 bg-background/50 flex-shrink-0">
                 <button
-                  className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
-                    rerMode === "sequential" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  onClick={() => setRerMode("sequential")}
-                  data-testid="mode-sequential"
-                >
-                  <GitBranch className="w-3 h-3" />
-                  Seq
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${rerMode === "sequential" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => setRerMode("sequential")} data-testid="mode-sequential">
+                  <GitBranch className="w-3 h-3" /> Seq
                 </button>
                 <button
-                  className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
-                    rerMode === "parallel" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  onClick={() => setRerMode("parallel")}
-                  data-testid="mode-parallel"
-                >
-                  <Zap className="w-3 h-3" />
-                  Para
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${rerMode === "parallel" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => setRerMode("parallel")} data-testid="mode-parallel">
+                  <Zap className="w-3 h-3" /> Para
                 </button>
               </div>
-
-              <Button
-                size="sm"
-                variant="outline"
-                className="flex-1 gap-1.5 text-xs"
-                onClick={handleStartRer}
-                disabled={!input.trim() || !!activeTask}
-                data-testid="button-run-rer"
-              >
-                <Play className="w-3 h-3" />
-                Run RER
+              <Button size="sm" variant="outline" className="text-xs h-7 gap-1 flex-shrink-0"
+                onClick={handleStartRer} disabled={!input.trim() || !!activeTask} data-testid="button-run-rer">
+                <Play className="w-3 h-3" /> Run RER
               </Button>
-
-              <Button
-                size="icon"
-                onClick={handleSend}
-                disabled={!input.trim()}
-                data-testid="button-send"
-              >
-                <Send className="w-4 h-4" />
+              <Button size="icon" className="h-7 w-7 flex-shrink-0"
+                onClick={handleSend} disabled={!input.trim() && attachments.length === 0} data-testid="button-send">
+                <Send className="w-3.5 h-3.5" />
               </Button>
             </div>
-            <div className="flex items-start gap-1">
-              <p className="text-xs text-muted-foreground">
-                {rerMode === "sequential"
-                  ? "Sequential: Tab 1→2→3→4 each enhancing the last"
-                  : "Parallel: All 4 tabs research simultaneously, then exchange"}
-              </p>
-            </div>
+
+            <p className="text-[10px] text-muted-foreground px-3 pb-2">
+              {rerMode === "sequential" ? "Sequential: Tab 1→2→3→4 each enhancing the last" : "Parallel: All 4 tabs research simultaneously, then exchange"}
+            </p>
           </div>
         </>
       )}
 
+      {/* ── TASKS TAB ─────────────────────────────────────────────────────────── */}
       {activeTab === "tasks" && (
         <ScrollArea className="flex-1">
           <div className="p-3 space-y-3">
@@ -217,9 +376,7 @@ export default function CommandCenter({
                 <p className="text-xs text-muted-foreground mt-1">Use the Chat tab to assign a research task.</p>
               </div>
             )}
-            {rerTasks.map((task) => (
-              <TaskCard key={task.id} task={task} />
-            ))}
+            {rerTasks.map(task => <TaskCard key={task.id} task={task} />)}
           </div>
         </ScrollArea>
       )}
@@ -231,64 +388,42 @@ function TaskCard({ task }: { task: RerTaskWithOutputs }) {
   const [expanded, setExpanded] = useState(task.status === "running");
 
   const statusColor = {
-    pending: "text-muted-foreground",
-    running: "text-primary",
-    done: "text-emerald-500",
-    error: "text-destructive",
+    pending: "text-muted-foreground", running: "text-primary",
+    done: "text-emerald-500", error: "text-destructive",
   }[task.status] || "text-muted-foreground";
 
   const progress = task.totalSteps > 0 ? Math.round((task.currentStep / task.totalSteps) * 100) : 0;
 
   return (
     <div className="border border-border rounded-xl overflow-hidden bg-background/40">
-      <div
-        className="px-3 py-2.5 flex items-center gap-2 cursor-pointer hover-elevate"
-        onClick={() => setExpanded(!expanded)}
-      >
-        {task.status === "running" ? (
-          <Loader2 className={`w-3.5 h-3.5 animate-spin ${statusColor} flex-shrink-0`} />
-        ) : task.status === "done" ? (
-          <CheckCircle2 className={`w-3.5 h-3.5 ${statusColor} flex-shrink-0`} />
-        ) : (
-          <div className={`w-3.5 h-3.5 rounded-full border-2 border-current ${statusColor} flex-shrink-0`} />
-        )}
+      <div className="px-3 py-2.5 flex items-center gap-2 cursor-pointer hover-elevate" onClick={() => setExpanded(!expanded)}>
+        {task.status === "running"
+          ? <Loader2 className={`w-3.5 h-3.5 animate-spin ${statusColor} flex-shrink-0`} />
+          : task.status === "done"
+          ? <CheckCircle2 className={`w-3.5 h-3.5 ${statusColor} flex-shrink-0`} />
+          : <div className={`w-3.5 h-3.5 rounded-full border-2 border-current ${statusColor} flex-shrink-0`} />}
         <div className="flex-1 min-w-0">
           <p className="text-xs font-medium text-card-foreground truncate">{task.topic}</p>
-          <p className="text-xs text-muted-foreground">
-            {task.mode === "sequential" ? "Sequential" : "Parallel"} · Step {task.currentStep}/{task.totalSteps}
-          </p>
+          <p className="text-xs text-muted-foreground">{task.mode} · Step {task.currentStep}/{task.totalSteps}</p>
         </div>
         {expanded ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />}
       </div>
-
-      {/* Progress bar */}
       {task.status === "running" && (
         <div className="h-0.5 bg-border">
-          <div
-            className="h-full bg-primary transition-all duration-500"
-            style={{ width: `${progress}%` }}
-          />
+          <div className="h-full bg-primary transition-all duration-500" style={{ width: `${progress}%` }} />
         </div>
       )}
-
       {expanded && task.agentOutputs.length > 0 && (
         <div className="border-t border-border divide-y divide-border">
-          {task.agentOutputs.map((out) => (
+          {task.agentOutputs.map(out => (
             <div key={out.id} className="px-3 py-2">
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs font-medium capitalize text-muted-foreground">{out.role}</span>
-                <span className={`text-xs ml-auto ${
-                  out.status === "done" ? "text-emerald-500" :
-                  out.status === "thinking" ? "text-primary" :
-                  out.status === "error" ? "text-destructive" :
-                  "text-muted-foreground"
-                }`}>
+                <span className={`text-xs ml-auto ${out.status === "done" ? "text-emerald-500" : out.status === "thinking" ? "text-primary" : out.status === "error" ? "text-destructive" : "text-muted-foreground"}`}>
                   {out.status === "thinking" ? "Working…" : out.status}
                 </span>
               </div>
-              {out.output && (
-                <p className="text-xs text-foreground/70 line-clamp-2">{out.output.slice(0, 120)}…</p>
-              )}
+              {out.output && <p className="text-xs text-foreground/70 line-clamp-2">{out.output.slice(0,120)}…</p>}
             </div>
           ))}
         </div>
