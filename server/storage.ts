@@ -6,9 +6,27 @@ import {
   type RerTask, type InsertRerTask,
   type RerAgentOutput, type InsertRerAgentOutput,
 } from "@shared/schema";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
+
+// ── User types (in-memory only, not in shared schema to keep DB-free) ─────────
+export interface AppUser {
+  id: string;
+  email: string;
+  displayName: string;
+  passwordHash: string;
+  createdAt: Date;
+  provider: "email" | "google" | "github" | "guest";
+}
+
+function hashPassword(pwd: string) {
+  return createHash("sha256").update(pwd + "zq-salt-2024").digest("hex");
+}
 
 export interface IStorage {
+  // User auth
+  createUser(email: string, displayName: string, password: string): Promise<Omit<AppUser, "passwordHash">>;
+  loginUser(email: string, password: string): Promise<Omit<AppUser, "passwordHash"> | null>;
+  getUserById(id: string): Promise<Omit<AppUser, "passwordHash"> | undefined>;
   getRoom(id: string): Promise<Room | undefined>;
   createRoom(room: InsertRoom): Promise<Room>;
   updateRoom(id: string, updates: Partial<Room>): Promise<Room | undefined>;
@@ -32,12 +50,46 @@ export interface IStorage {
 }
 
 export class MemStorage implements IStorage {
+  private users = new Map<string, AppUser>();
   private rooms = new Map<string, Room>();
   private members = new Map<string, Member>();
   private chatMessages = new Map<string, ChatMessage>();
   private roomStates = new Map<string, RoomState>();
   private rerTasks = new Map<string, RerTask>();
   private rerAgentOutputs = new Map<string, RerAgentOutput>();
+
+  // ── User auth ───────────────────────────────────────────────────────────────
+  async createUser(email: string, displayName: string, password: string) {
+    const existing = Array.from(this.users.values()).find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (existing) throw new Error("Email already registered");
+    const user: AppUser = {
+      id: `user-${randomUUID().slice(0,8)}`,
+      email: email.toLowerCase().trim(),
+      displayName: displayName.trim(),
+      passwordHash: hashPassword(password),
+      createdAt: new Date(),
+      provider: "email",
+    };
+    this.users.set(user.id, user);
+    const { passwordHash: _, ...safe } = user;
+    return safe;
+  }
+
+  async loginUser(email: string, password: string) {
+    const user = Array.from(this.users.values()).find(
+      u => u.email.toLowerCase() === email.toLowerCase() && u.passwordHash === hashPassword(password)
+    );
+    if (!user) return null;
+    const { passwordHash: _, ...safe } = user;
+    return safe;
+  }
+
+  async getUserById(id: string) {
+    const user = this.users.get(id);
+    if (!user) return undefined;
+    const { passwordHash: _, ...safe } = user;
+    return safe;
+  }
 
   async getRoom(id: string) { return this.rooms.get(id); }
 

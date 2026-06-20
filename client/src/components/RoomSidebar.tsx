@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import {
   Settings, FlaskConical, BookOpen, FolderPlus, ChevronRight, ChevronDown,
-  Folder, FileText, LayoutDashboard, Plus, MoreHorizontal,
+  Folder, FileText, LayoutDashboard, Plus, MoreHorizontal, LogOut, User,
+  GitBranch, History,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,53 +17,42 @@ import {
 interface RoomSidebarProps {
   roomId: string;
   membersOnline: number;
+  activeNav: string;
+  onNavChange: (nav: string) => void;
 }
 
 interface FolderNode {
-  id: string;
-  name: string;
-  type: "folder" | "file";
-  children?: FolderNode[];
+  id: string; name: string; type: "folder" | "file"; children?: FolderNode[];
 }
 
 const DEFAULT_FOLDERS: FolderNode[] = [
-  {
-    id: "1", name: "Research Papers", type: "folder",
-    children: [
-      { id: "1-1", name: "AI & Machine Learning", type: "folder", children: [] },
-      { id: "1-2", name: "Literature Review", type: "folder", children: [] },
-      { id: "1-3", name: "survey_draft.md", type: "file" },
-    ],
-  },
-  {
-    id: "2", name: "Data Analysis", type: "folder",
-    children: [
-      { id: "2-1", name: "datasets", type: "folder", children: [] },
-      { id: "2-2", name: "notes.md", type: "file" },
-    ],
-  },
-  {
-    id: "3", name: "Reports", type: "folder",
-    children: [],
-  },
+  { id: "1", name: "Research Papers", type: "folder", children: [
+    { id: "1-1", name: "AI & Machine Learning", type: "folder", children: [] },
+    { id: "1-2", name: "Literature Review", type: "folder", children: [] },
+    { id: "1-3", name: "survey_draft.md", type: "file" },
+  ]},
+  { id: "2", name: "Data Analysis", type: "folder", children: [
+    { id: "2-1", name: "datasets", type: "folder", children: [] },
+    { id: "2-2", name: "notes.md", type: "file" },
+  ]},
+  { id: "3", name: "Reports", type: "folder", children: [] },
 ];
 
-export default function RoomSidebar({ roomId, membersOnline }: RoomSidebarProps) {
+export default function RoomSidebar({ roomId, membersOnline, activeNav, onNavChange }: RoomSidebarProps) {
+  const [, navigate] = useLocation();
   const [folders, setFolders] = useState<FolderNode[]>(DEFAULT_FOLDERS);
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
-  const [activeNav, setActiveNav] = useState("workspace");
+
+  const user = (() => {
+    try { return JSON.parse(localStorage.getItem("zq_user") || "null"); } catch { return null; }
+  })();
+  const displayName = localStorage.getItem("zq_displayName") || "User";
 
   const addFolder = () => {
     if (!newFolderName.trim()) return;
-    setFolders(prev => [...prev, {
-      id: Date.now().toString(),
-      name: newFolderName.trim(),
-      type: "folder",
-      children: [],
-    }]);
-    setNewFolderName("");
-    setShowNewFolder(false);
+    setFolders(prev => [...prev, { id: Date.now().toString(), name: newFolderName.trim(), type: "folder", children: [] }]);
+    setNewFolderName(""); setShowNewFolder(false);
   };
 
   const addSubfolder = (parentId: string) => {
@@ -70,8 +61,7 @@ export default function RoomSidebar({ roomId, membersOnline }: RoomSidebarProps)
     const insert = (nodes: FolderNode[]): FolderNode[] =>
       nodes.map(n => n.id === parentId
         ? { ...n, children: [...(n.children || []), { id: Date.now().toString(), name: name.trim(), type: "folder", children: [] }] }
-        : { ...n, children: n.children ? insert(n.children) : n.children }
-      );
+        : { ...n, children: n.children ? insert(n.children) : n.children });
     setFolders(insert);
   };
 
@@ -81,19 +71,41 @@ export default function RoomSidebar({ roomId, membersOnline }: RoomSidebarProps)
     setFolders(remove);
   };
 
+  const handleSignOut = () => {
+    localStorage.removeItem("zq_user");
+    localStorage.removeItem("zq_uid");
+    localStorage.removeItem("zq_displayName");
+    navigate("/");
+  };
+
+  const NAV_ITEMS = [
+    { id: "workspace", label: "Workspace",    Icon: LayoutDashboard },
+    { id: "rer",       label: "RER Pipeline", Icon: FlaskConical },
+    { id: "history",   label: "History",      Icon: History },
+    { id: "reports",   label: "Reports",      Icon: BookOpen },
+    { id: "github",    label: "GitHub",       Icon: GitBranch },
+  ];
+
   return (
     <div className="h-screen border-r border-border bg-sidebar flex flex-col" style={{ width: "220px", minWidth: "220px" }}>
       {/* Brand */}
       <div className="px-4 py-3.5 border-b border-sidebar-border">
-        <h1 className="text-sm font-bold tracking-tight text-sidebar-foreground">ZQ Workstation</h1>
-        <p className="text-xs text-muted-foreground mt-0.5">Research Platform</p>
+        <div className="flex items-center gap-2">
+          <div className="w-5 h-5 bg-primary rounded-md flex items-center justify-center flex-shrink-0">
+            <FlaskConical className="w-3 h-3 text-white" />
+          </div>
+          <div>
+            <h1 className="text-xs font-bold tracking-tight text-sidebar-foreground leading-tight">ZQ Workstation</h1>
+            <p className="text-[10px] text-muted-foreground">Research Platform</p>
+          </div>
+        </div>
       </div>
 
       {/* Room info */}
       <div className="px-3 py-2 border-b border-sidebar-border">
         <div className="flex items-center justify-between">
           <div className="min-w-0">
-            <p className="text-xs text-muted-foreground">Room</p>
+            <p className="text-[10px] text-muted-foreground">Room</p>
             <p className="text-xs font-medium text-sidebar-foreground truncate font-mono">{roomId}</p>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
@@ -105,21 +117,15 @@ export default function RoomSidebar({ roomId, membersOnline }: RoomSidebarProps)
 
       {/* Nav */}
       <nav className="p-2 border-b border-sidebar-border space-y-0.5">
-        {[
-          { id: "workspace", label: "Workspace", icon: LayoutDashboard },
-          { id: "rer", label: "RER Pipeline", icon: FlaskConical },
-          { id: "reports", label: "Reports", icon: BookOpen },
-        ].map(({ id, label, icon: Icon }) => (
+        {NAV_ITEMS.map(({ id, label, Icon }) => (
           <Button
             key={id}
             variant="ghost"
-            className={`w-full justify-start gap-2.5 h-8 text-xs ${
-              activeNav === id ? "bg-sidebar-accent text-sidebar-accent-foreground" : ""
-            }`}
-            onClick={() => setActiveNav(id)}
+            className={`w-full justify-start gap-2.5 h-8 text-xs ${activeNav === id ? "bg-sidebar-accent text-sidebar-accent-foreground" : ""}`}
+            onClick={() => onNavChange(id)}
             data-testid={`nav-${id}`}
           >
-            <Icon className="w-3.5 h-3.5" />
+            <Icon className="w-3.5 h-3.5 flex-shrink-0" />
             {label}
           </Button>
         ))}
@@ -128,35 +134,19 @@ export default function RoomSidebar({ roomId, membersOnline }: RoomSidebarProps)
       {/* Projects Tree */}
       <div className="flex-1 overflow-y-auto p-2">
         <div className="flex items-center justify-between px-1 mb-1.5">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Projects</span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-5 w-5"
-            onClick={() => setShowNewFolder(!showNewFolder)}
-            data-testid="button-add-folder"
-          >
+          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Projects</span>
+          <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => setShowNewFolder(!showNewFolder)} data-testid="button-add-folder">
             <FolderPlus className="w-3 h-3" />
           </Button>
         </div>
-
         {showNewFolder && (
           <div className="flex gap-1 mb-2 px-1">
-            <Input
-              value={newFolderName}
-              onChange={e => setNewFolderName(e.target.value)}
-              placeholder="Folder name…"
-              className="h-6 text-xs px-2"
-              onKeyDown={e => e.key === "Enter" && addFolder()}
-              autoFocus
-              data-testid="input-new-folder"
-            />
-            <Button size="sm" className="h-6 px-2 text-xs" onClick={addFolder} data-testid="button-create-folder">
-              Add
-            </Button>
+            <Input value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
+              placeholder="Folder name…" className="h-6 text-xs px-2"
+              onKeyDown={e => e.key === "Enter" && addFolder()} autoFocus data-testid="input-new-folder" />
+            <Button size="sm" className="h-6 px-2 text-xs" onClick={addFolder} data-testid="button-create-folder">Add</Button>
           </div>
         )}
-
         <div className="space-y-0.5">
           {folders.map(node => (
             <FolderItem key={node.id} node={node} level={0} onAddSubfolder={addSubfolder} onDelete={deleteNode} />
@@ -164,24 +154,36 @@ export default function RoomSidebar({ roomId, membersOnline }: RoomSidebarProps)
         </div>
       </div>
 
-      {/* Bottom */}
-      <div className="p-2 border-t border-sidebar-border">
-        <Button variant="ghost" size="sm" className="w-full justify-start gap-2 h-8 text-xs" data-testid="nav-settings">
-          <Settings className="w-3.5 h-3.5" />
-          Settings
+      {/* User + Settings */}
+      <div className="p-2 border-t border-sidebar-border space-y-1">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className="w-full justify-start gap-2 h-8 text-xs" data-testid="btn-user-menu">
+              <div className="w-5 h-5 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0">
+                <User className="w-2.5 h-2.5 text-primary" />
+              </div>
+              <span className="truncate flex-1 text-left">{displayName}</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" className="w-48 text-xs">
+            {user?.email && <DropdownMenuItem className="text-xs text-muted-foreground cursor-default">{user.email}</DropdownMenuItem>}
+            <DropdownMenuItem className="text-xs text-destructive" onClick={handleSignOut} data-testid="btn-signout">
+              <LogOut className="w-3.5 h-3.5 mr-2" /> Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button variant="ghost" size="sm" className="w-full justify-start gap-2 h-8 text-xs" data-testid="nav-settings"
+          onClick={() => onNavChange("settings")}>
+          <Settings className="w-3.5 h-3.5" /> Settings
         </Button>
       </div>
     </div>
   );
 }
 
-function FolderItem({
-  node, level, onAddSubfolder, onDelete,
-}: {
-  node: FolderNode;
-  level: number;
-  onAddSubfolder: (id: string) => void;
-  onDelete: (id: string) => void;
+function FolderItem({ node, level, onAddSubfolder, onDelete }: {
+  node: FolderNode; level: number;
+  onAddSubfolder: (id: string) => void; onDelete: (id: string) => void;
 }) {
   const [isOpen, setIsOpen] = useState(level === 0);
   const hasChildren = node.children && node.children.length > 0;
@@ -189,11 +191,8 @@ function FolderItem({
 
   if (node.type === "file") {
     return (
-      <div
-        className="flex items-center gap-1.5 py-1 rounded-md text-xs hover-elevate active-elevate-2 cursor-pointer group"
-        style={{ paddingLeft: `${indent + 8}px` }}
-        data-testid={`file-${node.id}`}
-      >
+      <div className="flex items-center gap-1.5 py-1 rounded-md text-xs hover-elevate active-elevate-2 cursor-pointer"
+        style={{ paddingLeft: `${indent + 8}px` }} data-testid={`file-${node.id}`}>
         <FileText className="w-3 h-3 text-muted-foreground flex-shrink-0" />
         <span className="text-sidebar-foreground truncate">{node.name}</span>
       </div>
@@ -204,45 +203,26 @@ function FolderItem({
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <div className="flex items-center group rounded-md hover-elevate" style={{ paddingLeft: `${indent}px` }}>
         <CollapsibleTrigger asChild>
-          <button
-            className="flex items-center gap-1.5 flex-1 py-1 px-2 text-xs rounded-md min-w-0"
-            data-testid={`folder-${node.id}`}
-          >
-            {hasChildren || isOpen
-              ? isOpen ? <ChevronDown className="w-3 h-3 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 flex-shrink-0" />
-              : <div className="w-3 h-3 flex-shrink-0" />
-            }
+          <button className="flex items-center gap-1.5 flex-1 py-1 px-2 text-xs rounded-md min-w-0" data-testid={`folder-${node.id}`}>
+            {hasChildren || isOpen ? (isOpen ? <ChevronDown className="w-3 h-3 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 flex-shrink-0" />) : <div className="w-3 h-3 flex-shrink-0" />}
             <Folder className="w-3 h-3 text-muted-foreground flex-shrink-0" />
             <span className="text-sidebar-foreground truncate">{node.name}</span>
           </button>
         </CollapsibleTrigger>
-
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-5 w-5 opacity-0 group-hover:opacity-100 mr-1 flex-shrink-0"
-              data-testid={`folder-menu-${node.id}`}
-            >
+            <Button variant="ghost" size="icon" className="h-5 w-5 opacity-0 group-hover:opacity-100 mr-1 flex-shrink-0" data-testid={`folder-menu-${node.id}`}>
               <MoreHorizontal className="w-3 h-3" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="text-xs">
-            <DropdownMenuItem onClick={() => onAddSubfolder(node.id)}>
-              <Plus className="w-3 h-3 mr-2" /> New Subfolder
-            </DropdownMenuItem>
-            <DropdownMenuItem className="text-destructive" onClick={() => onDelete(node.id)}>
-              Delete
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onAddSubfolder(node.id)}><Plus className="w-3 h-3 mr-2" />New Subfolder</DropdownMenuItem>
+            <DropdownMenuItem className="text-destructive" onClick={() => onDelete(node.id)}>Delete</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-
       <CollapsibleContent>
-        {node.children?.map(child => (
-          <FolderItem key={child.id} node={child} level={level + 1} onAddSubfolder={onAddSubfolder} onDelete={onDelete} />
-        ))}
+        {node.children?.map(child => <FolderItem key={child.id} node={child} level={level + 1} onAddSubfolder={onAddSubfolder} onDelete={onDelete} />)}
       </CollapsibleContent>
     </Collapsible>
   );

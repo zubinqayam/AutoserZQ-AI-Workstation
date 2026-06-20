@@ -154,6 +154,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ZQ COA (Cognitive Overlay Agent) chat
+  // ── Auth routes ─────────────────────────────────────────────────────────────
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const { email, password, displayName } = req.body;
+      if (!email || !password || !displayName) return res.status(400).json({ error: "email, password, displayName required" });
+      if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters" });
+      const user = await storage.createUser(email, displayName, password);
+      res.json({ user });
+    } catch (err: any) { res.status(400).json({ error: err.message || "Registration failed" }); }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { email, password } = req.body;
+      if (!email || !password) return res.status(400).json({ error: "email and password required" });
+      const user = await storage.loginUser(email, password);
+      if (!user) return res.status(401).json({ error: "Invalid email or password" });
+      res.json({ user });
+    } catch (err: any) { res.status(400).json({ error: err.message || "Login failed" }); }
+  });
+
+  app.get("/api/auth/me", async (req, res) => {
+    const uid = req.headers["x-uid"] as string;
+    if (!uid) return res.status(401).json({ error: "Not authenticated" });
+    const user = await storage.getUserById(uid);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({ user });
+  });
+
   app.post("/api/coa/chat", async (req, res) => {
     try {
       const { messages, workspaceContext } = req.body;
