@@ -36,22 +36,26 @@ interface FolderNode {
   id: string; name: string; type: "folder" | "file"; children?: FolderNode[];
 }
 
-const DEFAULT_FOLDERS: FolderNode[] = [
-  { id: "1", name: "Research Papers", type: "folder", children: [
-    { id: "1-1", name: "AI & Machine Learning", type: "folder", children: [] },
-    { id: "1-2", name: "Literature Review", type: "folder", children: [] },
-    { id: "1-3", name: "survey_draft.md", type: "file" },
-  ]},
-  { id: "2", name: "Data Analysis", type: "folder", children: [
-    { id: "2-1", name: "datasets", type: "folder", children: [] },
-    { id: "2-2", name: "notes.md", type: "file" },
-  ]},
-  { id: "3", name: "Reports", type: "folder", children: [] },
-];
+const DEFAULT_FOLDERS: FolderNode[] = [];
+
+function loadFolders(): FolderNode[] {
+  try {
+    const uid = localStorage.getItem("zq_uid") || "guest";
+    const saved = localStorage.getItem(`zq_folders_${uid}`);
+    return saved ? JSON.parse(saved) : [];
+  } catch { return []; }
+}
+
+function saveFolders(folders: FolderNode[]) {
+  try {
+    const uid = localStorage.getItem("zq_uid") || "guest";
+    localStorage.setItem(`zq_folders_${uid}`, JSON.stringify(folders));
+  } catch {}
+}
 
 export default function RoomSidebar({ roomId, membersOnline, activeNav, onNavChange }: RoomSidebarProps) {
   const [, navigate] = useLocation();
-  const [folders, setFolders] = useState<FolderNode[]>(DEFAULT_FOLDERS);
+  const [folders, setFolders] = useState<FolderNode[]>(() => loadFolders());
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [usage, setUsage] = useState<UsageState | null>(null);
@@ -70,6 +74,8 @@ export default function RoomSidebar({ roomId, membersOnline, activeNav, onNavCha
       .then(d => d && setUsage(d))
       .catch(() => {});
   }, [isGuest]);
+
+  useEffect(() => { saveFolders(folders); }, [folders]);
 
   const addFolder = () => {
     if (!newFolderName.trim()) return;

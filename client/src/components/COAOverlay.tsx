@@ -263,8 +263,8 @@ export default function COAOverlay({ rerTasks }: COAOverlayProps) {
   // ── Open panel ────────────────────────────────────────────────────────────
   const panel = (
     <div
-      style={{ position: "fixed", left: pos.x, top: pos.y, width: panelW, zIndex: 99999, transition: "width .15s ease" }}
-      className="flex flex-col bg-card border border-border rounded-2xl shadow-2xl overflow-hidden select-none"
+      style={{ position: "fixed", left: pos.x, top: pos.y, width: panelW, height: panelH, zIndex: 99999, transition: "width .15s ease, height .15s ease" }}
+      className="flex flex-col bg-card border border-border rounded-2xl shadow-2xl overflow-hidden"
       data-testid="coa-overlay"
     >
       {/* Title bar — draggable area */}
@@ -329,7 +329,7 @@ export default function COAOverlay({ rerTasks }: COAOverlayProps) {
 
           {/* ── AGENTS VIEW ──────────────────────────────────────────────── */}
           {activeView === "agents" && (
-            <ScrollArea className="flex-1 min-h-0" style={{ height: panelH - 130 }}>
+            <ScrollArea className="flex-1 min-h-0" data-no-drag>
               <div className="p-3">
                 <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
                   Use <span className="font-mono bg-muted px-1 rounded">@name</span> in Chat to address a specific agent, or let the system auto-route your message.
@@ -361,7 +361,7 @@ export default function COAOverlay({ rerTasks }: COAOverlayProps) {
 
           {/* ── API KEYS VIEW (Keyhole) ───────────────────────────────────── */}
           {activeView === "keys" && (
-            <ScrollArea className="flex-1 min-h-0" style={{ height: panelH - 130 }}>
+            <ScrollArea className="flex-1 min-h-0" data-no-drag>
               <div className="p-3 space-y-3">
                 <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-500/5 border border-blue-500/20">
                   <Eye className="w-4 h-4 text-blue-400 flex-shrink-0" />
@@ -433,7 +433,7 @@ export default function COAOverlay({ rerTasks }: COAOverlayProps) {
           {/* ── CHAT VIEW ────────────────────────────────────────────────── */}
           {activeView === "chat" && (
             <>
-              <ScrollArea className="flex-1 min-h-0" style={{ height: panelH - 170 }} data-no-drag>
+              <ScrollArea className="flex-1 min-h-0" data-no-drag>
                 <div className="p-3 space-y-3">
                   {msgs.length === 0 && (
                     <div className="flex flex-col items-center py-6 gap-3 text-center">

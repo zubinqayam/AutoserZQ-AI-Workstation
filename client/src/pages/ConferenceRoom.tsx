@@ -10,6 +10,7 @@ import {
   Share2, Lock, Unlock, Wifi, WifiOff, ArrowRight, Play, Zap,
   History, FlaskConical, GitBranch, Clock, CheckCircle2,
   AlertCircle, Loader2, ExternalLink, Settings, BookOpen,
+  Shield, Eye, Activity, Search, Brain, Cpu, Gauge,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { RerTask, RerAgentOutput } from "@shared/schema";
@@ -199,6 +200,108 @@ export default function ConferenceRoom() {
   );
 }
 
+// ── ALGA Intelligence Matrix ──────────────────────────────────────────────────
+function AlgaMatrix({ agentOutputs, latestTask }: {
+  agentOutputs: RerAgentOutput[];
+  latestTask?: RerTask & { agentOutputs?: RerAgentOutput[] };
+}) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(v => v + 1), 2000);
+    return () => clearInterval(t);
+  }, []);
+
+  const isRunning = agentOutputs.some(a => a.status === "thinking");
+  const doneCount = agentOutputs.filter(a => a.status === "done").length;
+
+  const MATRIX_NODES = [
+    { id: "legitimacy",  label: "Legitimacy Check",     Icon: Shield,   col: "#22c55e" },
+    { id: "compliance",  label: "Compliance Scan",      Icon: CheckCircle2, col: "#3b82f6" },
+    { id: "sourcing",    label: "Source Integrity",     Icon: Search,   col: "#a855f7" },
+    { id: "bias",        label: "Bias Detection",       Icon: Eye,      col: "#f59e0b" },
+    { id: "coherence",   label: "Coherence Score",      Icon: Brain,    col: "#06b6d4" },
+    { id: "depth",       label: "Depth Analysis",       Icon: Activity, col: "#ec4899" },
+  ];
+
+  const getNodeStatus = (idx: number) => {
+    if (!isRunning && doneCount === 0) return "idle";
+    if (isRunning && doneCount <= idx) return "scanning";
+    return "clear";
+  };
+
+  return (
+    <div className="border border-border rounded-xl bg-card/60 p-3 flex-shrink-0" data-testid="alga-matrix">
+      <div className="flex items-center gap-2 mb-2">
+        <div className="w-5 h-5 rounded-md flex items-center justify-center" style={{ background: "#22c55e20", border: "1px solid #22c55e40" }}>
+          <Cpu className="w-3 h-3" style={{ color: "#22c55e" }} />
+        </div>
+        <span className="text-xs font-bold text-card-foreground tracking-wide">ALGA · Intelligence Matrix</span>
+        <span className="text-[9px] font-mono text-muted-foreground/50 ml-1">Algorithmic Legitimacy & Governance Auditor</span>
+        {isRunning && (
+          <span className="ml-auto flex items-center gap-1 text-[10px] text-emerald-500 animate-pulse">
+            <Activity className="w-3 h-3" />monitoring
+          </span>
+        )}
+        {!isRunning && doneCount > 0 && (
+          <span className="ml-auto flex items-center gap-1 text-[10px] text-emerald-500">
+            <CheckCircle2 className="w-3 h-3" />audit complete
+          </span>
+        )}
+        {!isRunning && doneCount === 0 && (
+          <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground/50">
+            <Gauge className="w-3 h-3" />standby
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-6 gap-1.5">
+        {MATRIX_NODES.map((node, idx) => {
+          const status = getNodeStatus(idx);
+          return (
+            <div key={node.id}
+              className="flex flex-col items-center gap-1 p-1.5 rounded-lg border"
+              style={{
+                background: status === "idle" ? "transparent" : `${node.col}10`,
+                borderColor: status === "idle" ? "var(--border)" : `${node.col}30`,
+              }}
+              data-testid={`alga-node-${node.id}`}
+            >
+              <div className="relative">
+                <node.Icon
+                  className="w-3.5 h-3.5"
+                  style={{ color: status === "idle" ? "var(--muted-foreground)" : node.col, opacity: status === "idle" ? 0.3 : 1 }}
+                />
+                {status === "scanning" && (
+                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full animate-ping"
+                    style={{ background: node.col }} />
+                )}
+              </div>
+              <span className="text-[8px] font-medium text-center leading-tight"
+                style={{ color: status === "idle" ? "var(--muted-foreground)" : node.col, opacity: status === "idle" ? 0.4 : 0.8 }}>
+                {node.label}
+              </span>
+              <span className="text-[8px] font-mono"
+                style={{ color: status === "idle" ? "var(--muted-foreground)" : node.col, opacity: status === "idle" ? 0.3 : 0.6 }}>
+                {status === "idle" ? "—" : status === "scanning" ? "SCAN" : "PASS"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {latestTask && (
+        <div className="mt-2 flex items-center gap-2 px-2 py-1 rounded-lg bg-muted/30">
+          <Eye className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+          <span className="text-[10px] text-muted-foreground truncate">
+            <span className="font-medium text-foreground/60">Monitoring:</span> {latestTask.topic}
+          </span>
+          {doneCount > 0 && (
+            <span className="ml-auto text-[10px] text-emerald-500 font-mono flex-shrink-0">{doneCount}/4 verified</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Workspace View (4 agent tabs) ────────────────────────────────────────────
 function WorkspaceView({ agentOutputs, activeTabIndex, tabCreds, updateCreds, latestTask }: {
   agentOutputs: RerAgentOutput[];
@@ -229,6 +332,10 @@ function WorkspaceView({ agentOutputs, activeTabIndex, tabCreds, updateCreds, la
             <span className="ml-auto text-xs text-muted-foreground truncate max-w-[200px]">{latestTask.topic}</span>
           )}
         </div>
+      </div>
+      {/* ALGA Intelligence Matrix */}
+      <div className="px-3 pt-2 flex-shrink-0">
+        <AlgaMatrix agentOutputs={agentOutputs} latestTask={latestTask} />
       </div>
       <div className="flex-1 grid grid-cols-2 gap-3 p-3 overflow-auto min-h-0">
         {[0, 1, 2, 3].map((i) => (
