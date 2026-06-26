@@ -59,10 +59,19 @@ export default function ConferenceRoom() {
     try {
       const history = messages.slice(-8).map(m => ({ role: m.authorUid === uid ? "user" : "assistant", content: m.text }));
       const res = await fetch("/api/ai/chat", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-uid": uid },
         body: JSON.stringify({ messages: [...history, { role: "user", content: text }] }),
       });
       const data = await res.json();
+      if (res.status === 429) {
+        toast({ title: "Daily limit reached", description: data.error || "Too many requests today. Resets tomorrow.", variant: "destructive" });
+        return;
+      }
+      if (res.status === 401) {
+        toast({ title: "Login required", description: "Please log in to use AI features.", variant: "destructive" });
+        return;
+      }
       if (data.text) sendMessage({ type: "chat", roomId, authorUid: "supervisor-ai", text: data.text, isAI: true });
     } catch (err) { console.error("Supervisor AI error:", err); }
   }, [sendMessage, roomId, uid, messages]);
@@ -75,11 +84,19 @@ export default function ConferenceRoom() {
     });
     try {
       const res = await fetch("/api/rer/start", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", "x-uid": uid },
         body: JSON.stringify({ roomId, topic, mode }),
       });
+      const data = await res.json();
+      if (res.status === 429) {
+        toast({ title: "Daily limit reached", description: data.error || "Too many RER launches today.", variant: "destructive" });
+        return;
+      }
+      if (res.status === 401) {
+        toast({ title: "Login required", description: "Please log in to run the pipeline.", variant: "destructive" });
+        return;
+      }
       if (!res.ok) throw new Error("Failed to start");
-      // Auto-switch to RER view when pipeline starts
       setActiveNav("rer");
     } catch { toast({ title: "Failed to start pipeline", variant: "destructive" }); }
   }, [sendMessage, roomId, toast]);

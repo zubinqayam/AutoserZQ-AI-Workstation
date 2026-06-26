@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import {
   Settings, FlaskConical, BookOpen, FolderPlus, ChevronRight, ChevronDown,
   Folder, FileText, LayoutDashboard, Plus, MoreHorizontal, LogOut, User,
-  GitBranch, History,
+  GitBranch, History, Gauge, AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import {
   Collapsible, CollapsibleContent, CollapsibleTrigger,
 } from "@/components/ui/collapsible";
@@ -19,6 +20,16 @@ interface RoomSidebarProps {
   membersOnline: number;
   activeNav: string;
   onNavChange: (nav: string) => void;
+}
+
+interface UsageData {
+  geminiCalls: number; rerLaunches: number; coaCalls: number;
+}
+interface UsageLimits {
+  geminiPerDay: number; rerPerDay: number; coaPerDay: number;
+}
+interface UsageState {
+  usage: UsageData; tier: string; limits: UsageLimits;
 }
 
 interface FolderNode {
@@ -43,11 +54,22 @@ export default function RoomSidebar({ roomId, membersOnline, activeNav, onNavCha
   const [folders, setFolders] = useState<FolderNode[]>(DEFAULT_FOLDERS);
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
+  const [usage, setUsage] = useState<UsageState | null>(null);
 
   const user = (() => {
     try { return JSON.parse(localStorage.getItem("zq_user") || "null"); } catch { return null; }
   })();
   const displayName = localStorage.getItem("zq_displayName") || "User";
+  const isGuest = !user?.email;
+
+  useEffect(() => {
+    if (isGuest) return;
+    const uid = localStorage.getItem("zq_uid") || "";
+    fetch("/api/usage", { headers: { "x-uid": uid } })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setUsage(d))
+      .catch(() => {});
+  }, [isGuest]);
 
   const addFolder = () => {
     if (!newFolderName.trim()) return;
@@ -154,6 +176,25 @@ export default function RoomSidebar({ roomId, membersOnline, activeNav, onNavCha
         </div>
       </div>
 
+      {/* Usage bar (logged-in users only) */}
+      {!isGuest && usage && (
+        <div className="px-3 py-2 border-t border-sidebar-border space-y-1.5">
+          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+            <Gauge className="w-3 h-3" /> Usage ({usage.tier})
+          </div>
+          <UsageBar label="AI" used={usage.usage.geminiCalls} max={usage.limits.geminiPerDay} />
+          <UsageBar label="RER" used={usage.usage.rerLaunches} max={usage.limits.rerPerDay} />
+          <UsageBar label="COA" used={usage.usage.coaCalls} max={usage.limits.coaPerDay} />
+        </div>
+      )}
+      {isGuest && (
+        <div className="px-3 py-2 border-t border-sidebar-border">
+          <div className="flex items-center gap-1.5 text-[10px] text-amber-500/90">
+            <AlertTriangle className="w-3 h-3" /> Guest mode — AI features disabled
+          </div>
+        </div>
+      )}
+
       {/* User + Settings */}
       <div className="p-2 border-t border-sidebar-border space-y-1">
         <DropdownMenu>
@@ -163,6 +204,7 @@ export default function RoomSidebar({ roomId, membersOnline, activeNav, onNavCha
                 <User className="w-2.5 h-2.5 text-primary" />
               </div>
               <span className="truncate flex-1 text-left">{displayName}</span>
+              {isGuest && <Badge variant="outline" className="text-[9px] h-4 px-1 py-0 ml-1">Guest</Badge>}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="top" className="w-48 text-xs">
@@ -176,6 +218,22 @@ export default function RoomSidebar({ roomId, membersOnline, activeNav, onNavCha
           onClick={() => onNavChange("settings")}>
           <Settings className="w-3.5 h-3.5" /> Settings
         </Button>
+      </div>
+    </div>
+  );
+}
+
+function UsageBar({ label, used, max }: { label: string; used: number; max: number }) {
+  const pct = Math.min((used / max) * 100, 100);
+  const color = pct > 80 ? "bg-destructive" : pct > 50 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div className="space-y-0.5">
+      <div className="flex items-center justify-between text-[9px] text-muted-foreground">
+        <span>{label}</span>
+        <span>{used}/{max}</span>
+      </div>
+      <div className="w-full h-1 rounded-full bg-sidebar-border overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );

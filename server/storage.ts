@@ -16,6 +16,7 @@ export interface AppUser {
   passwordHash: string;
   createdAt: Date;
   provider: "email" | "google" | "github" | "guest";
+  tier?: "free" | "pro" | "enterprise";
 }
 
 function hashPassword(pwd: string) {
@@ -69,6 +70,7 @@ export class MemStorage implements IStorage {
       passwordHash: hashPassword(password),
       createdAt: new Date(),
       provider: "email",
+      tier: "free",
     };
     this.users.set(user.id, user);
     const { passwordHash: _, ...safe } = user;
@@ -208,6 +210,35 @@ export class MemStorage implements IStorage {
     return Array.from(this.rerAgentOutputs.values())
       .filter(o => o.taskId === taskId)
       .sort((a, b) => a.tabIndex - b.tabIndex);
+  }
+
+  // ── Rate limiting per user (daily) ──────────────────────────────────────────
+  private usageCounters = new Map<string, { date: string; geminiCalls: number; rerLaunches: number; coaCalls: number; resetAt: string }>();
+
+  async getUsage(uid: string) {
+    const today = new Date().toISOString().slice(0,10);
+    const key = `${uid}:${today}`;
+    let u = this.usageCounters.get(key);
+    if (!u || u.resetAt !== today) {
+      u = { date: today, geminiCalls: 0, rerLaunches: 0, coaCalls: 0, resetAt: today };
+      this.usageCounters.set(key, u);
+    }
+    return u;
+  }
+
+  async incrementUsage(uid: string, field: "geminiCalls" | "rerLaunches" | "coaCalls") {
+    const today = new Date().toISOString().slice(0,10);
+    const key = `${uid}:${today}`;
+    const u = await this.getUsage(uid);
+    u[field] += 1;
+    this.usageCounters.set(key, u);
+    return u;
+  }
+
+  // ── Commercial tier (future) ───────────────────────────────────────────────
+  async getTier(uid: string): Promise<"free" | "pro" | "enterprise"> {
+    const user = this.users.get(uid);
+    return (user?.tier as any) || "free";
   }
 }
 

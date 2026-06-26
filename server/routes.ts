@@ -142,8 +142,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   app.get("/api/room/:roomId/state", async (req, res) => res.json((await storage.getRoomState(req.params.roomId)) || null));
 
+  // ──── Cost protection middleware ──────────────────────────────────────────────
+  const LIMITS = {
+    free:       { geminiPerDay: 20,  rerPerDay: 3,  coaPerDay: 15,  },
+    pro:        { geminiPerDay: 100, rerPerDay: 15, coaPerDay: 50,  },
+    enterprise: { geminiPerDay: 500, rerPerDay: 50, coaPerDay: 200, },
+  };
+
+  const requireAuth = async (req: any, res: any, next: any) => {
+    const uid = req.headers["x-uid"] as string;
+    if (!uid) return res.status(401).json({ error: "Login required", code: "AUTH_REQUIRED" });
+    const user = await storage.getUserById(uid);
+    if (!user) return res.status(401).json({ error: "User not found", code: "AUTH_REQUIRED" });
+    req.user = user;
+    next();
+  };
+
+  const checkRateLimit = (field: "geminiCalls" | "rerLaunches" | "coaCalls") => async (req: any, res: any, next: any) => {
+    const uid = req.headers["x-uid"] as string;
+    if (!uid) return res.status(401).json({ error: "Login required", code: "AUTH_REQUIRED" });
+    const usage = await storage.getUsage(uid);
+    const tier = (await storage.getTier(uid)) as "free" | "pro" | "enterprise";
+    const limit = LIMITS[tier][field];
+    const used = usage[field];
+    if (used >= limit) {
+      return res.status(429).json({
+        error: `Daily ${field} limit reached (${used}/${limit}). Resets tomorrow.`,
+        code: "RATE_LIMITED",
+        tier,
+        limit,
+        used,
+        upgradeUrl: "/upgrade",
+      });
+    }
+    await storage.incrementUsage(uid, field);
+    next();
+  };
+
   // AI supervisor chat
-  app.post("/api/ai/chat", async (req, res) => {
+  app.post("/api/ai/chat", requireAuth, checkRateLimit("geminiCalls"), async (req, res) => {
     try {
       const { messages } = req.body;
       if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
@@ -151,6 +188,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (err: any) {
       res.status(500).json({ error: err.message || "AI unavailable" });
     }
+  });
+
+  // Usage endpoint
+  app.get("/api/usage", async (req, res) => {
+    const uid = req.headers["x-uid"] as string;
+    if (!uid) return res.status(401).json({ error: "Not authenticated" });
+    const usage = await storage.getUsage(uid);
+    const tier = await storage.getTier(uid);
+    res.json({ usage, tier, limits: LIMITS[tier as any] });
   });
 
   // ZQ COA (Cognitive Overlay Agent) chat
@@ -183,7 +229,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ user });
   });
 
-  app.post("/api/coa/chat", async (req, res) => {
+  app.post("/api/coa/chat", requireAuth, checkRateLimit("coaCalls"), async (req, res) => {
     try {
       const { messages, workspaceContext } = req.body;
       if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
@@ -195,7 +241,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ZQ COA multi-agent endpoint
-  app.post("/api/coa/multi-agent", async (req, res) => {
+  app.post("/api/coa/multi-agent", requireAuth, checkRateLimit("coaCalls"), async (req, res) => {
     try {
       const { message, history, workspaceContext } = req.body;
       if (!message) return res.status(400).json({ error: "message required" });
@@ -208,7 +254,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // RER: start pipeline
-  app.post("/api/rer/start", async (req, res) => {
+  app.post("/api/rer/start", requireAuth, checkRateLimit("rerLaunches"), async (req, res) => {
     try {
       const { roomId, topic, mode = "sequential" } = req.body;
       if (!roomId || !topic) return res.status(400).json({ error: "roomId and topic required" });

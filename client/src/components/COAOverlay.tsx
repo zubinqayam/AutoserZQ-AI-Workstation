@@ -202,11 +202,21 @@ export default function COAOverlay({ rerTasks }: COAOverlayProps) {
     setInput(""); setLoading(true);
     const history = msgs.slice(-10).map(m => ({ role: m.role === "user" ? "user" : "assistant", content: m.text }));
     try {
+      const uid = localStorage.getItem("zq_uid") || "";
       const r = await fetch("/api/coa/multi-agent", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-uid": uid },
         body: JSON.stringify({ message: text.trim(), history, workspaceContext: buildContext() }),
       });
-      const data: { responses: { agentId: AgentId; text: string }[] } = await r.json();
+      const data: { responses?: { agentId: AgentId; text: string }[]; error?: string; code?: string } = await r.json();
+      if (r.status === 429) {
+        setMsgs(p => [...p, { id: `e${Date.now()}`, role: "agent", agentId: "keyhole", text: `Rate limit: ${data.error || "Daily limit reached."}`, ts: new Date() }]);
+        setLoading(false); return;
+      }
+      if (r.status === 401) {
+        setMsgs(p => [...p, { id: `e${Date.now()}`, role: "agent", agentId: "keyhole", text: "Login required to use AI features.", ts: new Date() }]);
+        setLoading(false); return;
+      }
       const newMsgs = (data.responses || []).map(res => ({
         id: `a${Date.now()}-${res.agentId}`,
         role: "agent" as const, agentId: res.agentId, text: res.text, ts: new Date(),
