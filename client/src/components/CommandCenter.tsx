@@ -3,7 +3,7 @@ import {
   Send, Bot, User, Play, Zap, GitBranch, ChevronDown, ChevronRight,
   CheckCircle2, Loader2, Mic, MicOff, Camera, Paperclip, Link2,
   Upload, FolderOpen, X, ChevronLeft, ChevronRight as ChevronRightIcon,
-  File, Image as ImageIcon,
+  File, Image as ImageIcon, AlertCircle, FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -29,6 +29,9 @@ interface Attachment {
   preview?: string;
   url?: string;
   size?: number;
+  content?: string;
+  loading?: boolean;
+  error?: string;
 }
 
 export default function CommandCenter({
@@ -55,12 +58,22 @@ export default function CommandCenter({
 
   const handleSend = () => {
     if (!input.trim() && attachments.length === 0) return;
+    if (attachments.some(a => a.loading)) {
+      toast({ title: "Still reading…", description: "Wait for files/URLs to finish loading before sending." });
+      return;
+    }
     let text = input.trim();
     if (attachments.length > 0) {
-      const attStr = attachments.map(a =>
-        a.type === "link" ? `[Link: ${a.url}]` : `[${a.type === "image" ? "Image" : "File"}: ${a.name}]`
-      ).join(" ");
-      text = text ? `${text}\n${attStr}` : attStr;
+      const attStr = attachments.map(a => {
+        if (a.content) {
+          const label = a.type === "link" ? `URL: ${a.url}` : `File: ${a.name}`;
+          return `\n\n--- ${label} ---\n${a.content}\n--- end ---`;
+        }
+        if (a.error) return `[${a.name}: ${a.error}]`;
+        if (a.type === "image") return `[Image attached: ${a.name}]`;
+        return `[${a.name}]`;
+      }).join("");
+      text = text ? `${text}${attStr}` : attStr.trim();
     }
     onSendMessage(text);
     setInput(""); setAttachments([]);
@@ -105,10 +118,18 @@ export default function CommandCenter({
   }, [toast]);
 
   // ── File / Folder ────────────────────────────────────────────────────────────
+  const TEXT_TYPES = ["text/", "application/json", "application/xml", "application/javascript",
+    "application/typescript", "application/markdown", "application/x-yaml", "application/csv"];
+  const TEXT_EXTS = [".txt", ".md", ".json", ".csv", ".xml", ".js", ".ts", ".py", ".yaml", ".yml",
+    ".html", ".css", ".sh", ".log", ".sql", ".r", ".tex", ".rst"];
+
   const processFiles = (files: FileList | null) => {
     if (!files) return;
     Array.from(files).forEach(file => {
       const isImg = file.type.startsWith("image/");
+      const isText = TEXT_TYPES.some(t => file.type.startsWith(t)) ||
+        TEXT_EXTS.some(ext => file.name.toLowerCase().endsWith(ext));
+
       if (isImg) {
         const reader = new FileReader();
         reader.onload = e => setAttachments(p => [...p, {
@@ -116,8 +137,23 @@ export default function CommandCenter({
           preview: e.target?.result as string, size: file.size,
         }]);
         reader.readAsDataURL(file);
+      } else if (isText) {
+        const id = Date.now().toString() + Math.random();
+        setAttachments(p => [...p, { id, name: file.name, type: "file", size: file.size, loading: true }]);
+        const reader = new FileReader();
+        reader.onload = e => {
+          const text = (e.target?.result as string || "").slice(0, 12000);
+          setAttachments(p => p.map(a => a.id === id ? { ...a, content: text, loading: false } : a));
+        };
+        reader.onerror = () => {
+          setAttachments(p => p.map(a => a.id === id ? { ...a, error: "Read failed", loading: false } : a));
+        };
+        reader.readAsText(file);
       } else {
-        setAttachments(p => [...p, { id: Date.now().toString(), name: file.name, type: "file", size: file.size }]);
+        setAttachments(p => [...p, {
+          id: Date.now().toString(), name: file.name, type: "file", size: file.size,
+          error: "Binary file — only text/code files can be read",
+        }]);
       }
     });
   };
@@ -132,10 +168,30 @@ export default function CommandCenter({
     if (url?.startsWith("http")) setAttachments(p => [...p, { id: Date.now().toString(), name: url, type: "link", url }]);
   };
 
-  const addLink = () => {
-    if (!linkUrl.trim()) return;
-    setAttachments(p => [...p, { id: Date.now().toString(), name: linkUrl.trim(), type: "link", url: linkUrl.trim() }]);
+  const addLink = async () => {
+    const url = linkUrl.trim();
+    if (!url) return;
+    const id = Date.now().toString() + Math.random();
+    const label = url.length > 40 ? url.slice(0, 38) + "…" : url;
+    setAttachments(p => [...p, { id, name: label, type: "link", url, loading: true }]);
     setLinkUrl(""); setLinkMode(false);
+    try {
+      const res = await fetch("/api/fetch-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (res.ok && data.content) {
+        setAttachments(p => p.map(a => a.id === id ? { ...a, content: data.content, loading: false } : a));
+        toast({ title: "URL content loaded", description: `${data.content.length.toLocaleString()} characters read` });
+      } else {
+        setAttachments(p => p.map(a => a.id === id ? { ...a, error: data.error || "Failed to read", loading: false } : a));
+        toast({ title: "Could not read URL", description: data.error, variant: "destructive" });
+      }
+    } catch {
+      setAttachments(p => p.map(a => a.id === id ? { ...a, error: "Network error", loading: false } : a));
+    }
   };
 
   const removeAttachment = (id: string) => setAttachments(p => p.filter(a => a.id !== id));
@@ -245,16 +301,31 @@ export default function CommandCenter({
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
                 {attachments.map(a => (
-                  <div key={a.id} className="relative flex items-center gap-1 bg-muted rounded-lg pl-1.5 pr-6 py-1 text-[10px] text-muted-foreground max-w-[140px]">
-                    {a.type === "image" || a.type === "camera"
+                  <div key={a.id}
+                    title={a.content ? `${a.content.length.toLocaleString()} chars read` : a.error || a.name}
+                    className={`relative flex items-center gap-1 rounded-lg pl-1.5 pr-6 py-1 text-[10px] max-w-[160px] border ${
+                      a.error ? "bg-destructive/10 border-destructive/30 text-destructive"
+                      : a.content ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
+                      : a.loading ? "bg-muted border-border text-muted-foreground"
+                      : "bg-muted border-border text-muted-foreground"
+                    }`}>
+                    {a.loading
+                      ? <Loader2 className="w-3 h-3 flex-shrink-0 animate-spin" />
+                      : a.error
+                      ? <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                      : a.content
+                      ? <FileText className="w-3 h-3 flex-shrink-0" />
+                      : a.type === "image" || a.type === "camera"
                       ? a.preview
                         ? <img src={a.preview} className="w-4 h-4 rounded object-cover flex-shrink-0" />
                         : <ImageIcon className="w-3 h-3 flex-shrink-0" />
                       : a.type === "link"
-                      ? <Link2 className="w-3 h-3 flex-shrink-0 text-blue-400" />
+                      ? <Link2 className="w-3 h-3 flex-shrink-0" />
                       : <File className="w-3 h-3 flex-shrink-0" />}
-                    <span className="truncate">{a.name.length > 16 ? a.name.slice(0,14)+"…" : a.name}</span>
-                    <button className="absolute right-1 top-1/2 -translate-y-1/2" onClick={() => removeAttachment(a.id)}>
+                    <span className="truncate">{a.name.length > 18 ? a.name.slice(0,16)+"…" : a.name}</span>
+                    {a.content && <span className="text-[8px] opacity-60 flex-shrink-0">✓read</span>}
+                    {a.loading && <span className="text-[8px] opacity-60 flex-shrink-0">reading…</span>}
+                    <button className="absolute right-1 top-1/2 -translate-y-1/2 opacity-60 hover:opacity-100" onClick={() => removeAttachment(a.id)}>
                       <X className="w-2.5 h-2.5" />
                     </button>
                   </div>

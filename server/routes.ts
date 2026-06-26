@@ -415,3 +415,37 @@ async function broadcastState(taskId: string, broadcast: (m: any) => void) {
   const agentOutputs = await storage.getTaskAgentOutputs(taskId);
   broadcast({ type: "rer-task-update", task: { ...task, agentOutputs } });
 }
+
+// ── URL Content Fetcher ───────────────────────────────────────────────────────
+app.post("/api/fetch-url", async (req, res) => {
+  const { url } = req.body;
+  if (!url || typeof url !== "string") return res.status(400).json({ error: "URL required" });
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { "User-Agent": "ZQ-Workstation/1.0 (research reader)" },
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return res.status(400).json({ error: `HTTP ${response.status}` });
+    const contentType = response.headers.get("content-type") || "";
+    const rawText = await response.text();
+
+    let cleaned: string;
+    if (contentType.includes("html")) {
+      cleaned = rawText
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+        .replace(/\s{2,}/g, " ").trim()
+        .slice(0, 8000);
+    } else {
+      cleaned = rawText.slice(0, 8000);
+    }
+    res.json({ content: cleaned, url, contentType });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch URL" });
+  }
+});
