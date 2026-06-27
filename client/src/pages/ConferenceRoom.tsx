@@ -11,6 +11,8 @@ import {
   History, FlaskConical, GitBranch, Clock, CheckCircle2,
   AlertCircle, Loader2, ExternalLink, Settings, BookOpen,
   Shield, Eye, Activity, Search, Brain, Cpu, Gauge,
+  Monitor, ChevronLeft, ChevronRight, RefreshCw, Globe,
+  RotateCcw, Terminal,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { RerTask, RerAgentOutput } from "@shared/schema";
@@ -179,6 +181,7 @@ export default function ConferenceRoom() {
               onNavChange={setActiveNav}
             />
           )}
+          {activeNav === "conferenceroom" && <ConferenceRoomBrowserView />}
           {activeNav === "history" && <HistoryView rerTasks={rerTasks} />}
           {activeNav === "reports" && <ReportsView rerTasks={rerTasks} />}
           {activeNav === "github" && <GitHubView />}
@@ -692,6 +695,231 @@ function GitHubView() {
         <p className="text-[10px] text-muted-foreground/40">
           Set GITHUB_TOKEN in environment secrets to enable full integration.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ── ZQ Conference Room Browser View ───────────────────────────────────────────
+const SEARCH_ENGINES: Record<string, string> = {
+  duckduckgo: "https://duckduckgo.com/?q=",
+  bing:       "https://www.bing.com/search?q=",
+  wikipedia:  "https://en.wikipedia.org/wiki/Special:Search?search=",
+  google:     "https://www.google.com/search?q=",
+};
+const DEFAULT_SEARCH = "duckduckgo";
+
+const TAB_DEFAULTS = [
+  { label: "Tab 1", url: "https://duckduckgo.com", color: "#6366f1" },
+  { label: "Tab 2", url: "https://en.wikipedia.org/wiki/Main_Page", color: "#f97316" },
+  { label: "Tab 3", url: "https://www.bing.com", color: "#10b981" },
+  { label: "Tab 4", url: "https://duckduckgo.com", color: "#a855f7" },
+];
+
+interface BrowserTab {
+  label: string;
+  url: string;
+  inputUrl: string;
+  history: string[];
+  histIdx: number;
+  color: string;
+  loading: boolean;
+}
+
+function toUrl(raw: string, engine: string = DEFAULT_SEARCH): string {
+  const t = raw.trim();
+  if (!t) return "";
+  if (/^https?:\/\//i.test(t)) return t;
+  if (/^[\w.-]+\.\w{2,}(\/|$)/i.test(t)) return `https://${t}`;
+  return (SEARCH_ENGINES[engine] || SEARCH_ENGINES.duckduckgo) + encodeURIComponent(t);
+}
+
+function ConferenceRoomBrowserView() {
+  const [tabs, setTabs] = useState<BrowserTab[]>(
+    TAB_DEFAULTS.map(d => ({ ...d, inputUrl: d.url, history: [d.url], histIdx: 0, loading: false }))
+  );
+  const [engine, setEngine] = useState<string>(DEFAULT_SEARCH);
+  const [log, setLog] = useState<string[]>([]);
+  const [showLog, setShowLog] = useState(false);
+  const iframeRefs = [
+    useRef<HTMLIFrameElement>(null),
+    useRef<HTMLIFrameElement>(null),
+    useRef<HTMLIFrameElement>(null),
+    useRef<HTMLIFrameElement>(null),
+  ];
+
+  const navigate = (tabIdx: number, rawUrl: string, fromCmd = false) => {
+    const url = toUrl(rawUrl, engine);
+    if (!url) return;
+    setTabs(prev => prev.map((t, i) => {
+      if (i !== tabIdx) return t;
+      const hist = t.history.slice(0, t.histIdx + 1);
+      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true };
+    }));
+    if (fromCmd) {
+      setLog(l => [`[${new Date().toLocaleTimeString()}] Tab ${tabIdx + 1} → ${url}`, ...l].slice(0, 50));
+    }
+  };
+
+  const navigateAll = (rawUrl: string) => {
+    const url = toUrl(rawUrl, engine);
+    if (!url) return;
+    setTabs(prev => prev.map(t => {
+      const hist = t.history.slice(0, t.histIdx + 1);
+      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true };
+    }));
+    setLog(l => [`[${new Date().toLocaleTimeString()}] ALL TABS → ${url}`, ...l].slice(0, 50));
+  };
+
+  const goBack  = (i: number) => setTabs(prev => prev.map((t, idx) => {
+    if (idx !== i || t.histIdx <= 0) return t;
+    const ni = t.histIdx - 1;
+    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true };
+  }));
+  const goFwd   = (i: number) => setTabs(prev => prev.map((t, idx) => {
+    if (idx !== i || t.histIdx >= t.history.length - 1) return t;
+    const ni = t.histIdx + 1;
+    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true };
+  }));
+  const refresh = (i: number) => {
+    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: true }));
+    const ref = iframeRefs[i].current;
+    if (ref) { try { ref.src = tabs[i].url; } catch {} }
+  };
+  const onLoad  = (i: number) => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: false }));
+
+  const setLabel = (i: number, label: string) =>
+    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, label }));
+
+  const handleKey = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") navigate(i, tabs[i].inputUrl);
+  };
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { tab, url } = (e as CustomEvent).detail as { tab: number | "all"; url: string };
+      if (tab === "all") { navigateAll(url); }
+      else if (typeof tab === "number" && tab >= 1 && tab <= 4) { navigate(tab - 1, url, true); }
+    };
+    window.addEventListener("zq-tab-navigate", handler);
+    return () => window.removeEventListener("zq-tab-navigate", handler);
+  }, [engine]);
+
+  const COLORS = ["indigo", "orange", "emerald", "purple"];
+  const COLOR_HEX = ["#6366f1", "#f97316", "#10b981", "#a855f7"];
+
+  return (
+    <div className="flex flex-col h-full bg-background">
+      {/* Header */}
+      <div className="px-4 py-2 border-b border-border bg-card/50 flex-shrink-0 flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Monitor className="w-4 h-4 text-primary flex-shrink-0" />
+          <span className="text-xs font-bold text-card-foreground tracking-wide">ZQ Conference Room</span>
+          <span className="text-[9px] text-muted-foreground font-mono">Execution Layer · 4 live browser panels</span>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-[10px] text-muted-foreground">Search engine:</span>
+          <select
+            className="text-[10px] bg-background border border-border rounded px-1.5 py-0.5 text-muted-foreground"
+            value={engine}
+            onChange={e => setEngine(e.target.value)}
+            data-testid="select-search-engine"
+          >
+            <option value="duckduckgo">DuckDuckGo</option>
+            <option value="bing">Bing</option>
+            <option value="wikipedia">Wikipedia</option>
+            <option value="google">Google</option>
+          </select>
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowLog(v => !v)} title="Command log">
+            <Terminal className="w-3 h-3" />
+          </Button>
+        </div>
+        <div className="w-full text-[9px] text-muted-foreground/50">
+          Command Center: type <span className="font-mono bg-muted px-1 rounded">@tab1 google.com</span>, <span className="font-mono bg-muted px-1 rounded">@tab2 AI news</span>, or <span className="font-mono bg-muted px-1 rounded">@all wikipedia</span> to navigate panels simultaneously
+        </div>
+      </div>
+
+      {showLog && log.length > 0 && (
+        <div className="flex-shrink-0 border-b border-border bg-muted/30 px-4 py-2 max-h-24 overflow-y-auto">
+          {log.map((l, i) => <p key={i} className="text-[9px] font-mono text-muted-foreground">{l}</p>)}
+        </div>
+      )}
+
+      {/* 2×2 Browser Grid */}
+      <div className="flex-1 grid grid-cols-2 grid-rows-2 gap-2 p-2 min-h-0 overflow-hidden">
+        {tabs.map((tab, i) => (
+          <div key={i}
+            className="flex flex-col rounded-xl border overflow-hidden min-h-0"
+            style={{ borderColor: `${COLOR_HEX[i]}30` }}
+            data-testid={`conference-tab-${i + 1}`}
+          >
+            {/* Tab toolbar */}
+            <div className="flex items-center gap-1 px-2 py-1.5 border-b flex-shrink-0"
+              style={{ background: `${COLOR_HEX[i]}08`, borderColor: `${COLOR_HEX[i]}20` }}>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md text-white flex-shrink-0"
+                  style={{ background: COLOR_HEX[i] }}>
+                  TAB {i + 1}
+                </span>
+                <input
+                  value={tab.label}
+                  onChange={e => setLabel(i, e.target.value)}
+                  className="text-[9px] font-semibold bg-transparent border-none outline-none w-16 text-muted-foreground"
+                  data-testid={`input-tab-label-${i + 1}`}
+                />
+              </div>
+              <div className="flex items-center gap-0.5">
+                <button onClick={() => goBack(i)} disabled={tab.histIdx <= 0}
+                  className="p-0.5 rounded disabled:opacity-20 hover:bg-muted transition-colors">
+                  <ChevronLeft className="w-3 h-3 text-muted-foreground" />
+                </button>
+                <button onClick={() => goFwd(i)} disabled={tab.histIdx >= tab.history.length - 1}
+                  className="p-0.5 rounded disabled:opacity-20 hover:bg-muted transition-colors">
+                  <ChevronRight className="w-3 h-3 text-muted-foreground" />
+                </button>
+                <button onClick={() => refresh(i)}
+                  className="p-0.5 rounded hover:bg-muted transition-colors">
+                  {tab.loading
+                    ? <RotateCcw className="w-3 h-3 text-muted-foreground animate-spin" />
+                    : <RefreshCw className="w-3 h-3 text-muted-foreground" />}
+                </button>
+              </div>
+              <div className="flex-1 flex items-center gap-1 bg-background/80 border border-border/50 rounded-lg px-2 min-w-0">
+                <Globe className="w-2.5 h-2.5 text-muted-foreground/40 flex-shrink-0" />
+                <input
+                  value={tab.inputUrl}
+                  onChange={e => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, inputUrl: e.target.value }))}
+                  onKeyDown={e => handleKey(i, e)}
+                  placeholder="Enter URL or search…"
+                  className="flex-1 text-[9px] bg-transparent border-none outline-none text-muted-foreground min-w-0"
+                  data-testid={`input-url-${i + 1}`}
+                />
+              </div>
+              <button onClick={() => window.open(tab.url, "_blank")}
+                className="p-0.5 rounded hover:bg-muted transition-colors flex-shrink-0"
+                title="Open in real browser tab">
+                <ExternalLink className="w-3 h-3 text-muted-foreground/60" />
+              </button>
+            </div>
+            {/* Iframe */}
+            <div className="flex-1 relative min-h-0">
+              <iframe
+                ref={iframeRefs[i]}
+                src={tab.url}
+                className="w-full h-full border-none"
+                title={tab.label}
+                onLoad={() => onLoad(i)}
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation-by-user-activation"
+                data-testid={`iframe-tab-${i + 1}`}
+              />
+              {tab.loading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-background/60 pointer-events-none">
+                  <Loader2 className="w-5 h-5 animate-spin" style={{ color: COLOR_HEX[i] }} />
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

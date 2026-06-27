@@ -56,10 +56,33 @@ export default function CommandCenter({
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
+  // ── Conference Room tab routing ───────────────────────────────────────────────
+  const tryTabRoute = (raw: string): boolean => {
+    const t = raw.trim();
+    // @tab1 <url/search>  |  @tab2 …  |  @tab3 …  |  @tab4 …  |  @all <url/search>
+    const m = t.match(/^@(tab[1-4]|all)\s+(.+)$/i);
+    if (!m) return false;
+    const target = m[1].toLowerCase();
+    const dest   = m[2].trim();
+    if (target === "all") {
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", { detail: { tab: "all", url: dest } }));
+    } else {
+      const tabNum = parseInt(target.replace("tab", ""), 10);
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", { detail: { tab: tabNum, url: dest } }));
+    }
+    toast({ title: `Conference Room`, description: `${target.toUpperCase()} → ${dest}` });
+    return true;
+  };
+
   const handleSend = () => {
     if (!input.trim() && attachments.length === 0) return;
     if (attachments.some(a => a.loading)) {
       toast({ title: "Still reading…", description: "Wait for files/URLs to finish loading before sending." });
+      return;
+    }
+    // Check for @tab routing first
+    if (input.trim() && tryTabRoute(input.trim())) {
+      setInput(""); setAttachments([]);
       return;
     }
     let text = input.trim();
