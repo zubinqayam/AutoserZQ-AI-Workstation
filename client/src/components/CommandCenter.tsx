@@ -117,12 +117,16 @@ Type @cr help anytime to see this guide.`;
       toast({ title: "Still reading…", description: "Wait for files/URLs to finish loading before sending." });
       return;
     }
-    // Check for @tab routing first
+    // Check for @tab routing, @rer, then NL browser commands
     if (input.trim() && tryTabRoute(input.trim())) {
       setInput(""); setAttachments([]);
       return;
     }
     if (input.trim() && tryRerCommand(input.trim())) {
+      setInput(""); setAttachments([]);
+      return;
+    }
+    if (input.trim() && tryNLBrowserCommand(input.trim())) {
       setInput(""); setAttachments([]);
       return;
     }
@@ -157,6 +161,100 @@ Type @cr help anytime to see this guide.`;
     onStartRer(topic, rerMode);
     toast({ title: "RER Pipeline", description: `Launching ${rerMode} pipeline: "${topic}"` });
     return true;
+  };
+
+  // ── Natural language browser command parser ────────────────────────────────
+  // Detects plain-English commands and routes them to Conference Room panels
+  const SITE_MAP: Record<string, string> = {
+    "wikipedia":    "https://en.wikipedia.org",
+    "wiki":         "https://en.wikipedia.org",
+    "duckduckgo":   "https://duckduckgo.com",
+    "bing":         "https://www.bing.com",
+    "startpage":    "https://www.startpage.com",
+    "brave":        "https://search.brave.com",
+    "perplexity":   "https://www.perplexity.ai",
+    "arxiv":        "https://arxiv.org",
+    "pubmed":       "https://pubmed.ncbi.nlm.nih.gov",
+    "github":       "https://github.com",
+    "stackoverflow":"https://stackoverflow.com",
+    "medium":       "https://medium.com",
+    "reddit":       "https://old.reddit.com",
+    "archive":      "https://web.archive.org",
+    "bbc":          "https://www.bbc.com",
+    "reuters":      "https://www.reuters.com",
+  };
+
+  const tryNLBrowserCommand = (raw: string): boolean => {
+    const t = raw.trim();
+
+    // "search <query> in [browser/tab/panel] <N>"
+    let m = t.match(/^search\s+(.+?)\s+in\s+(?:browser|tab|panel)\s*([1-4])\s*$/i);
+    if (m) {
+      const [, q, n] = m;
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", { detail: { tab: parseInt(n), url: q.trim() } }));
+      toast({ title: "Conference Room", description: `Browser ${n} → searching "${q.trim()}"` });
+      return true;
+    }
+
+    // "search <query> in all [browsers/tabs/panels]"
+    m = t.match(/^search\s+(.+?)\s+in\s+all(?:\s+(?:browsers?|tabs?|panels?))?\s*$/i);
+    if (m) {
+      const q = m[1].trim();
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", { detail: { tab: "all", url: q } }));
+      toast({ title: "Conference Room", description: `All browsers → searching "${q}"` });
+      return true;
+    }
+
+    // "research <query> in parallel" or "search all browsers for <query>"
+    m = t.match(/^(?:research\s+(.+?)\s+in\s+parallel|search\s+all\s+browsers?\s+for\s+(.+))\s*$/i);
+    if (m) {
+      const q = (m[1] || m[2]).trim();
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", { detail: { tab: "all", url: q } }));
+      toast({ title: "Conference Room", description: `Parallel search: "${q}"` });
+      return true;
+    }
+
+    // "open <site> in [browser/tab/panel] <N>" or "browse <site> in ..."
+    m = t.match(/^(?:open|browse|navigate to|go to)\s+(.+?)\s+in\s+(?:browser|tab|panel)\s*([1-4])\s*$/i);
+    if (m) {
+      const [, site, n] = m;
+      const url = SITE_MAP[site.toLowerCase().trim()] || site.trim();
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", { detail: { tab: parseInt(n), url } }));
+      toast({ title: "Conference Room", description: `Browser ${n} → ${url}` });
+      return true;
+    }
+
+    // "open <site> in all [browsers/tabs]"
+    m = t.match(/^(?:open|browse)\s+(.+?)\s+in\s+all(?:\s+(?:browsers?|tabs?))?\s*$/i);
+    if (m) {
+      const site = m[1].trim();
+      const url = SITE_MAP[site.toLowerCase()] || site;
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", { detail: { tab: "all", url } }));
+      toast({ title: "Conference Room", description: `All browsers → ${url}` });
+      return true;
+    }
+
+    // "look up <term> on Wikipedia" / "find <term> on Wikipedia"
+    m = t.match(/^(?:look up|find|search for)\s+(.+?)\s+on\s+wikipedia\s*$/i);
+    if (m) {
+      const q = m[1].trim();
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", {
+        detail: { tab: 1, url: `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(q)}` }
+      }));
+      toast({ title: "Conference Room", description: `Browser 1 → Wikipedia: "${q}"` });
+      return true;
+    }
+
+    // "navigate [browser/tab/panel] <N> to <url>"
+    m = t.match(/^navigate\s+(?:browser|tab|panel)\s*([1-4])\s+to\s+(.+)$/i);
+    if (m) {
+      const [, n, dest] = m;
+      window.dispatchEvent(new CustomEvent("zq-tab-navigate", { detail: { tab: parseInt(n), url: dest.trim() } }));
+      toast({ title: "Conference Room", description: `Browser ${n} → ${dest.trim()}` });
+      return true;
+    }
+
+    return false;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

@@ -12,7 +12,7 @@ import {
   AlertCircle, Loader2, ExternalLink, Settings, BookOpen,
   Shield, Eye, Activity, Search, Brain, Cpu, Gauge,
   Monitor, ChevronLeft, ChevronRight, RefreshCw, Globe,
-  RotateCcw, Terminal,
+  RotateCcw, Terminal, Camera, Archive, Maximize2, Minimize2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { RerTask, RerAgentOutput } from "@shared/schema";
@@ -715,21 +715,24 @@ function GitHubView() {
   );
 }
 
-// ── ZQ Conference Room Browser View ───────────────────────────────────────────
+// ── ZQ Conference Room Browser View v3.0 ──────────────────────────────────────
 const SEARCH_ENGINES: Record<string, string> = {
   duckduckgo: "https://duckduckgo.com/?q=",
   bing:       "https://www.bing.com/search?q=",
+  startpage:  "https://www.startpage.com/search?q=",
+  brave:      "https://search.brave.com/search?q=",
+  perplexity: "https://www.perplexity.ai/search?q=",
   wikipedia:  "https://en.wikipedia.org/wiki/Special:Search?search=",
-  google:     "https://www.google.com/search?q=",
 };
-const DEFAULT_SEARCH = "duckduckgo";
 
 const TAB_DEFAULTS = [
-  { label: "Tab 1", url: "https://duckduckgo.com", color: "#6366f1" },
-  { label: "Tab 2", url: "https://en.wikipedia.org/wiki/Main_Page", color: "#f97316" },
-  { label: "Tab 3", url: "https://www.bing.com", color: "#10b981" },
-  { label: "Tab 4", url: "https://duckduckgo.com", color: "#a855f7" },
+  { label: "Browser 1", url: "https://duckduckgo.com",                color: "#6366f1" },
+  { label: "Browser 2", url: "https://en.wikipedia.org/wiki/Main_Page", color: "#f97316" },
+  { label: "Browser 3", url: "https://www.bing.com",                  color: "#10b981" },
+  { label: "Browser 4", url: "https://search.brave.com",              color: "#a855f7" },
 ];
+
+type ViewMode = "grid" | "focus" | "fullscreen";
 
 interface BrowserTab {
   label: string;
@@ -739,9 +742,18 @@ interface BrowserTab {
   histIdx: number;
   color: string;
   loading: boolean;
+  status: string;
 }
 
-function toUrl(raw: string, engine: string = DEFAULT_SEARCH): string {
+interface EvidenceCapture {
+  id: string;
+  panel: number;
+  url: string;
+  timestamp: string;
+  label: string;
+}
+
+function toUrl(raw: string, engine = "duckduckgo"): string {
   const t = raw.trim();
   if (!t) return "";
   if (/^https?:\/\//i.test(t)) return t;
@@ -749,13 +761,27 @@ function toUrl(raw: string, engine: string = DEFAULT_SEARCH): string {
   return (SEARCH_ENGINES[engine] || SEARCH_ENGINES.duckduckgo) + encodeURIComponent(t);
 }
 
+const COLOR_HEX = ["#6366f1", "#f97316", "#10b981", "#a855f7"];
+
+function statusColor(s: string) {
+  if (s === "Ready") return "#22c55e";
+  if (s.startsWith("Load") || s.startsWith("Refresh") || s === "Navigating...") return "#f97316";
+  if (s.startsWith("Error") || s.startsWith("Blocked")) return "#ef4444";
+  return "#a855f7";
+}
+
 function ConferenceRoomBrowserView() {
   const [tabs, setTabs] = useState<BrowserTab[]>(
-    TAB_DEFAULTS.map(d => ({ ...d, inputUrl: d.url, history: [d.url], histIdx: 0, loading: false }))
+    TAB_DEFAULTS.map(d => ({ ...d, inputUrl: d.url, history: [d.url], histIdx: 0, loading: false, status: "Ready" }))
   );
-  const [engine, setEngine] = useState<string>(DEFAULT_SEARCH);
+  const [engine, setEngine] = useState("duckduckgo");
+  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [focusedPanel, setFocusedPanel] = useState(0);
   const [log, setLog] = useState<string[]>([]);
   const [showLog, setShowLog] = useState(false);
+  const [evidence, setEvidence] = useState<EvidenceCapture[]>([]);
+  const [showEvidence, setShowEvidence] = useState(false);
+
   const iframeRefs = [
     useRef<HTMLIFrameElement>(null),
     useRef<HTMLIFrameElement>(null),
@@ -763,161 +789,282 @@ function ConferenceRoomBrowserView() {
     useRef<HTMLIFrameElement>(null),
   ];
 
-  const navigate = (tabIdx: number, rawUrl: string, fromCmd = false) => {
+  const navigate = useCallback((tabIdx: number, rawUrl: string, fromCmd = false) => {
     const url = toUrl(rawUrl, engine);
     if (!url) return;
     setTabs(prev => prev.map((t, i) => {
       if (i !== tabIdx) return t;
       const hist = t.history.slice(0, t.histIdx + 1);
-      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true };
+      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true, status: "Loading..." };
     }));
-    if (fromCmd) {
-      setLog(l => [`[${new Date().toLocaleTimeString()}] Tab ${tabIdx + 1} → ${url}`, ...l].slice(0, 50));
-    }
-  };
+    if (fromCmd) setLog(l => [`[${new Date().toLocaleTimeString()}] Browser ${tabIdx + 1} → ${url}`, ...l].slice(0, 80));
+  }, [engine]);
 
-  const navigateAll = (rawUrl: string) => {
+  const navigateAll = useCallback((rawUrl: string) => {
     const url = toUrl(rawUrl, engine);
     if (!url) return;
     setTabs(prev => prev.map(t => {
       const hist = t.history.slice(0, t.histIdx + 1);
-      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true };
+      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true, status: "Loading..." };
     }));
-    setLog(l => [`[${new Date().toLocaleTimeString()}] ALL TABS → ${url}`, ...l].slice(0, 50));
-  };
+    setLog(l => [`[${new Date().toLocaleTimeString()}] ALL BROWSERS → ${url}`, ...l].slice(0, 80));
+  }, [engine]);
 
   const goBack  = (i: number) => setTabs(prev => prev.map((t, idx) => {
     if (idx !== i || t.histIdx <= 0) return t;
     const ni = t.histIdx - 1;
-    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true };
+    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true, status: "Navigating..." };
   }));
   const goFwd   = (i: number) => setTabs(prev => prev.map((t, idx) => {
     if (idx !== i || t.histIdx >= t.history.length - 1) return t;
     const ni = t.histIdx + 1;
-    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true };
+    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true, status: "Navigating..." };
   }));
   const refresh = (i: number) => {
-    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: true }));
-    const ref = iframeRefs[i].current;
-    if (ref) { try { ref.src = tabs[i].url; } catch {} }
+    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: true, status: "Refreshing..." }));
+    if (iframeRefs[i].current) { try { iframeRefs[i].current!.src = tabs[i].url; } catch {} }
   };
-  const onLoad  = (i: number) => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: false }));
-
-  const setLabel = (i: number, label: string) =>
-    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, label }));
-
+  const onLoad  = (i: number) => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: false, status: "Ready" }));
+  const setLabel = (i: number, label: string) => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, label }));
   const handleKey = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") navigate(i, tabs[i].inputUrl);
   };
 
+  const captureEvidence = (i: number) => {
+    setEvidence(prev => [{
+      id: Date.now().toString(),
+      panel: i + 1,
+      url: tabs[i].url,
+      timestamp: new Date().toLocaleString(),
+      label: tabs[i].label,
+    }, ...prev].slice(0, 100));
+    setShowEvidence(true);
+  };
+
+  const focusPanel = (i: number, mode: ViewMode = "focus") => {
+    setFocusedPanel(i);
+    setViewMode(mode);
+  };
+
+  // Listen for @tab / @all navigation events from Command Center
   useEffect(() => {
     const handler = (e: Event) => {
       const { tab, url } = (e as CustomEvent).detail as { tab: number | "all"; url: string };
-      if (tab === "all") { navigateAll(url); }
-      else if (typeof tab === "number" && tab >= 1 && tab <= 4) { navigate(tab - 1, url, true); }
+      if (tab === "all") navigateAll(url);
+      else if (typeof tab === "number" && tab >= 1 && tab <= 4) navigate(tab - 1, url, true);
     };
     window.addEventListener("zq-tab-navigate", handler);
     return () => window.removeEventListener("zq-tab-navigate", handler);
-  }, [engine]);
+  }, [navigate, navigateAll]);
 
-  const COLORS = ["indigo", "orange", "emerald", "purple"];
-  const COLOR_HEX = ["#6366f1", "#f97316", "#10b981", "#a855f7"];
+  // ── Layout system: CSS-only, iframes NEVER unmount / reload ─────────────────
+  const containerStyle = (): React.CSSProperties => {
+    if (viewMode === "grid") return {
+      display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr",
+      gap: 8, padding: 8, flex: 1, minHeight: 0, overflow: "hidden",
+    };
+    if (viewMode === "focus") return {
+      display: "grid", gridTemplateColumns: "3fr 1fr", gridTemplateRows: "1fr 1fr 1fr",
+      gap: 8, padding: 8, flex: 1, minHeight: 0, overflow: "hidden",
+    };
+    return { position: "relative", flex: 1, minHeight: 0, overflow: "hidden" };
+  };
+
+  const panelStyle = (idx: number): React.CSSProperties => {
+    const base: React.CSSProperties = {
+      display: "flex", flexDirection: "column", overflow: "hidden",
+      borderRadius: 12, border: `1px solid ${COLOR_HEX[idx]}30`,
+    };
+    if (viewMode === "grid") return { ...base, minHeight: 0 };
+    if (viewMode === "focus") {
+      if (idx === focusedPanel) return {
+        ...base, gridRow: "1 / 4", gridColumn: "1",
+        border: `1px solid ${COLOR_HEX[idx]}60`,
+        boxShadow: `0 0 0 2px ${COLOR_HEX[idx]}15`,
+      };
+      const pos = [0,1,2,3].filter(n => n !== focusedPanel).indexOf(idx);
+      return { ...base, gridRow: `${pos + 1} / ${pos + 2}`, gridColumn: "2", minHeight: 0, opacity: 0.88 };
+    }
+    // fullscreen
+    if (idx === focusedPanel) return {
+      ...base, position: "absolute", inset: 0, zIndex: 10, borderRadius: 8,
+    };
+    return { ...base, position: "absolute", inset: 0, visibility: "hidden", pointerEvents: "none" };
+  };
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* Header */}
-      <div className="px-4 py-2 border-b border-border bg-card/50 flex-shrink-0 flex items-center gap-3 flex-wrap">
+
+      {/* ── Top toolbar ────────────────────────────────────────────────────── */}
+      <div className="px-4 py-2 border-b border-border bg-card/50 flex-shrink-0 flex items-center gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Monitor className="w-4 h-4 text-primary flex-shrink-0" />
           <span className="text-xs font-bold text-card-foreground tracking-wide">ZQ Conference Room</span>
-          <span className="text-[9px] text-muted-foreground font-mono">Execution Layer · 4 live browser panels</span>
+          <span className="text-[9px] text-muted-foreground font-mono hidden md:block">v3.0 · Multi-Browser Command Center</span>
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-[10px] text-muted-foreground">Search engine:</span>
+
+        {/* View mode switcher */}
+        <div className="flex items-center gap-0.5 border border-border rounded-md p-0.5 bg-background/50 ml-2">
+          {([["grid","Grid"],["focus","Focus"],["fullscreen","Full"]] as const).map(([m, label]) => (
+            <button key={m}
+              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${viewMode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setViewMode(m)} data-testid={`btn-view-${m}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className="text-[10px] text-muted-foreground hidden sm:block">Engine:</span>
           <select
             className="text-[10px] bg-background border border-border rounded px-1.5 py-0.5 text-muted-foreground"
-            value={engine}
-            onChange={e => setEngine(e.target.value)}
-            data-testid="select-search-engine"
-          >
+            value={engine} onChange={e => setEngine(e.target.value)} data-testid="select-search-engine">
             <option value="duckduckgo">DuckDuckGo</option>
             <option value="bing">Bing</option>
+            <option value="startpage">Startpage (Google proxy)</option>
+            <option value="brave">Brave Search</option>
+            <option value="perplexity">Perplexity AI</option>
             <option value="wikipedia">Wikipedia</option>
-            <option value="google">Google</option>
           </select>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowLog(v => !v)} title="Command log">
+          <Button variant="ghost" size="icon" className="h-6 w-6" title="Evidence captures" onClick={() => setShowEvidence(v => !v)} data-testid="btn-evidence">
+            <Archive className="w-3 h-3" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-6 w-6" title="Command log" onClick={() => setShowLog(v => !v)} data-testid="btn-log">
             <Terminal className="w-3 h-3" />
           </Button>
         </div>
-        <div className="w-full text-[9px] text-muted-foreground/50">
-          Command Center: type <span className="font-mono bg-muted px-1 rounded">@tab1 google.com</span>, <span className="font-mono bg-muted px-1 rounded">@tab2 AI news</span>, or <span className="font-mono bg-muted px-1 rounded">@all wikipedia</span> to navigate panels simultaneously
+
+        <div className="w-full text-[9px] text-muted-foreground/40 flex flex-wrap gap-x-3 gap-y-0.5">
+          <span><code className="bg-muted px-1 rounded">@tab1 url</code> navigate</span>
+          <span><code className="bg-muted px-1 rounded">@all query</code> all browsers</span>
+          <span><code className="bg-muted px-1 rounded">search X in all browsers</code> NL</span>
+          <span><code className="bg-muted px-1 rounded">@cr help</code> full guide</span>
         </div>
       </div>
 
-      {showLog && log.length > 0 && (
-        <div className="flex-shrink-0 border-b border-border bg-muted/30 px-4 py-2 max-h-24 overflow-y-auto">
-          {log.map((l, i) => <p key={i} className="text-[9px] font-mono text-muted-foreground">{l}</p>)}
+      {/* ── Command log ────────────────────────────────────────────────────── */}
+      {showLog && (
+        <div className="flex-shrink-0 border-b border-border bg-muted/20 px-4 py-2 max-h-24 overflow-y-auto">
+          <p className="text-[8px] font-bold text-muted-foreground/40 uppercase tracking-widest mb-1">Command Log</p>
+          {log.length === 0
+            ? <p className="text-[9px] text-muted-foreground/30">No commands yet this session.</p>
+            : log.map((l, i) => <p key={i} className="text-[9px] font-mono text-muted-foreground">{l}</p>)}
         </div>
       )}
 
-      {/* 2×2 Browser Grid */}
-      <div className="flex-1 grid grid-cols-2 grid-rows-2 gap-2 p-2 min-h-0 overflow-hidden">
+      {/* ── Evidence panel ─────────────────────────────────────────────────── */}
+      {showEvidence && (
+        <div className="flex-shrink-0 border-b border-border bg-muted/20 px-4 py-2 max-h-28 overflow-y-auto">
+          <p className="text-[8px] font-bold text-muted-foreground/40 uppercase tracking-widest mb-1">Evidence Captures ({evidence.length})</p>
+          {evidence.length === 0
+            ? <p className="text-[9px] text-muted-foreground/30">Click the camera icon on any panel to capture URL + timestamp as evidence.</p>
+            : evidence.map(ev => (
+              <div key={ev.id} className="text-[9px] font-mono flex gap-2 text-muted-foreground">
+                <span style={{ color: COLOR_HEX[ev.panel - 1] }}>B{ev.panel}</span>
+                <span className="text-muted-foreground/50 flex-shrink-0">{ev.timestamp}</span>
+                <span className="truncate">{ev.url}</span>
+              </div>
+            ))}
+        </div>
+      )}
+
+      {/* ── Focus/Fullscreen panel selector bar ────────────────────────────── */}
+      {(viewMode === "focus" || viewMode === "fullscreen") && (
+        <div className="flex-shrink-0 flex items-center gap-1 px-4 py-1 border-b border-border bg-card/30">
+          <span className="text-[10px] text-muted-foreground/40 mr-1">
+            {viewMode === "fullscreen" ? "Active browser:" : "Focused:"}
+          </span>
+          {[0,1,2,3].map(i => (
+            <button key={i}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${focusedPanel === i ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setFocusedPanel(i)} data-testid={`btn-panel-select-${i+1}`}>
+              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: COLOR_HEX[i] }} />
+              {tabs[i].label}
+            </button>
+          ))}
+          <button className="ml-auto text-[10px] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+            onClick={() => setViewMode("grid")}>
+            Back to Grid
+          </button>
+        </div>
+      )}
+
+      {/* ── Browser panels — all 4 always mounted, layout via CSS only ─────── */}
+      <div style={containerStyle()}>
         {tabs.map((tab, i) => (
-          <div key={i}
-            className="flex flex-col rounded-xl border overflow-hidden min-h-0"
-            style={{ borderColor: `${COLOR_HEX[i]}30` }}
-            data-testid={`conference-tab-${i + 1}`}
-          >
-            {/* Tab toolbar */}
-            <div className="flex items-center gap-1 px-2 py-1.5 border-b flex-shrink-0"
-              style={{ background: `${COLOR_HEX[i]}08`, borderColor: `${COLOR_HEX[i]}20` }}>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md text-white flex-shrink-0"
-                  style={{ background: COLOR_HEX[i] }}>
-                  TAB {i + 1}
-                </span>
-                <input
-                  value={tab.label}
-                  onChange={e => setLabel(i, e.target.value)}
-                  className="text-[9px] font-semibold bg-transparent border-none outline-none w-16 text-muted-foreground"
-                  data-testid={`input-tab-label-${i + 1}`}
-                />
-              </div>
-              <div className="flex items-center gap-0.5">
-                <button onClick={() => goBack(i)} disabled={tab.histIdx <= 0}
-                  className="p-0.5 rounded disabled:opacity-20 hover:bg-muted transition-colors">
-                  <ChevronLeft className="w-3 h-3 text-muted-foreground" />
-                </button>
-                <button onClick={() => goFwd(i)} disabled={tab.histIdx >= tab.history.length - 1}
-                  className="p-0.5 rounded disabled:opacity-20 hover:bg-muted transition-colors">
-                  <ChevronRight className="w-3 h-3 text-muted-foreground" />
-                </button>
-                <button onClick={() => refresh(i)}
-                  className="p-0.5 rounded hover:bg-muted transition-colors">
-                  {tab.loading
-                    ? <RotateCcw className="w-3 h-3 text-muted-foreground animate-spin" />
-                    : <RefreshCw className="w-3 h-3 text-muted-foreground" />}
-                </button>
-              </div>
-              <div className="flex-1 flex items-center gap-1 bg-background/80 border border-border/50 rounded-lg px-2 min-w-0">
-                <Globe className="w-2.5 h-2.5 text-muted-foreground/40 flex-shrink-0" />
+          <div key={i} style={panelStyle(i)} data-testid={`conference-tab-${i + 1}`}>
+
+            {/* Panel toolbar */}
+            <div className="flex items-center gap-1 px-2 py-1 border-b flex-shrink-0"
+              style={{ background: `${COLOR_HEX[i]}08`, borderColor: `${COLOR_HEX[i]}20`, minHeight: 34 }}>
+
+              {/* Index badge + editable label + live status */}
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md text-white flex-shrink-0"
+                style={{ background: COLOR_HEX[i] }}>{i + 1}</span>
+              <input value={tab.label} onChange={e => setLabel(i, e.target.value)}
+                className="text-[9px] font-semibold bg-transparent border-none outline-none w-16 text-muted-foreground min-w-0"
+                data-testid={`input-tab-label-${i + 1}`} />
+              <span className="text-[8px] px-1.5 py-0.5 rounded-full font-mono flex-shrink-0"
+                style={{ color: statusColor(tab.status), background: `${statusColor(tab.status)}18` }}>
+                {tab.status}
+              </span>
+
+              {/* Nav buttons */}
+              <button onClick={() => goBack(i)} disabled={tab.histIdx <= 0}
+                className="p-0.5 rounded disabled:opacity-20 hover:bg-muted transition-colors flex-shrink-0">
+                <ChevronLeft className="w-3 h-3 text-muted-foreground" />
+              </button>
+              <button onClick={() => goFwd(i)} disabled={tab.histIdx >= tab.history.length - 1}
+                className="p-0.5 rounded disabled:opacity-20 hover:bg-muted transition-colors flex-shrink-0">
+                <ChevronRight className="w-3 h-3 text-muted-foreground" />
+              </button>
+              <button onClick={() => refresh(i)}
+                className="p-0.5 rounded hover:bg-muted transition-colors flex-shrink-0">
+                {tab.loading
+                  ? <RotateCcw className="w-3 h-3 text-muted-foreground animate-spin" />
+                  : <RefreshCw className="w-3 h-3 text-muted-foreground" />}
+              </button>
+
+              {/* URL bar */}
+              <div className="flex-1 flex items-center gap-1 bg-background/80 border border-border/40 rounded-lg px-1.5 min-w-0 mx-1">
+                <Globe className="w-2.5 h-2.5 text-muted-foreground/30 flex-shrink-0" />
                 <input
                   value={tab.inputUrl}
                   onChange={e => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, inputUrl: e.target.value }))}
                   onKeyDown={e => handleKey(i, e)}
-                  placeholder="Enter URL or search…"
-                  className="flex-1 text-[9px] bg-transparent border-none outline-none text-muted-foreground min-w-0"
+                  placeholder="URL or search…"
+                  className="flex-1 text-[9px] bg-transparent border-none outline-none text-muted-foreground min-w-0 py-0.5"
                   data-testid={`input-url-${i + 1}`}
                 />
               </div>
-              <button onClick={() => window.open(tab.url, "_blank")}
-                className="p-0.5 rounded hover:bg-muted transition-colors flex-shrink-0"
-                title="Open in real browser tab">
-                <ExternalLink className="w-3 h-3 text-muted-foreground/60" />
-              </button>
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-0.5 flex-shrink-0">
+                <button onClick={() => captureEvidence(i)} title="Capture evidence (URL + timestamp)"
+                  className="p-0.5 rounded hover:bg-muted transition-colors" data-testid={`btn-capture-${i+1}`}>
+                  <Camera className="w-3 h-3 text-muted-foreground/50" />
+                </button>
+                <button
+                  onClick={() => focusPanel(i, viewMode === "focus" && focusedPanel === i ? "fullscreen" : "focus")}
+                  title={viewMode === "focus" && focusedPanel === i ? "Go fullscreen" : "Focus this browser"}
+                  className="p-0.5 rounded hover:bg-muted transition-colors" data-testid={`btn-focus-${i+1}`}>
+                  <Maximize2 className="w-3 h-3 text-muted-foreground/50" />
+                </button>
+                {viewMode !== "grid" && i === focusedPanel && (
+                  <button onClick={() => setViewMode("grid")} title="Return to grid"
+                    className="p-0.5 rounded hover:bg-muted transition-colors">
+                    <Minimize2 className="w-3 h-3 text-muted-foreground/50" />
+                  </button>
+                )}
+                <button onClick={() => window.open(tab.url, "_blank")} title="Open in real browser tab"
+                  className="p-0.5 rounded hover:bg-muted transition-colors" data-testid={`btn-external-${i+1}`}>
+                  <ExternalLink className="w-3 h-3 text-muted-foreground/50" />
+                </button>
+              </div>
             </div>
-            {/* Iframe */}
-            <div className="flex-1 relative min-h-0">
+
+            {/* Iframe — always mounted, never recreated */}
+            <div className="flex-1 relative" style={{ minHeight: 0 }}>
               <iframe
                 ref={iframeRefs[i]}
                 src={tab.url}
@@ -928,8 +1075,9 @@ function ConferenceRoomBrowserView() {
                 data-testid={`iframe-tab-${i + 1}`}
               />
               {tab.loading && (
-                <div className="absolute inset-0 flex items-center justify-center bg-background/60 pointer-events-none">
-                  <Loader2 className="w-5 h-5 animate-spin" style={{ color: COLOR_HEX[i] }} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/70 pointer-events-none gap-2">
+                  <Loader2 className="w-6 h-6 animate-spin" style={{ color: COLOR_HEX[i] }} />
+                  <span className="text-[10px] font-mono" style={{ color: COLOR_HEX[i] }}>{tab.status}</span>
                 </div>
               )}
             </div>

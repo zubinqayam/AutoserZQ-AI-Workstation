@@ -1,0 +1,607 @@
+ZQ Workstation v3.0
+
+AI Multi-Browser Command Center & Research Operating System
+
+Master Implementation Directive for Replit AI
+
+---
+
+Executive Vision
+
+ZQ Workstation is not a web browser.
+
+It is not a chatbot.
+
+It is not a scraping tool.
+
+It is an AI Multi-Browser Command Center powered by a Research Operating System.
+
+The goal is to allow a user to control multiple live browser sessions simultaneously from one AI control room using natural language.
+
+The browser layer must behave like Chrome, Edge, or Firefox while the AI orchestrates tasks across all browser panels in parallel.
+
+The user must always feel they are watching and controlling real browsers—not screenshots or recreated pages.
+
+---
+
+Core Product Vision
+
+Imagine an operations center where four independent browsers are always visible.
+
+Each browser is fully interactive.
+
+Each browser can:
+
+- Browse any website
+- Log into accounts
+- Maintain independent cookies
+- Maintain independent sessions
+- Execute AI instructions
+- Be manually controlled at any time
+
+The AI acts as an operations manager.
+
+Instead of opening websites manually, the user simply types commands into the Control Room.
+
+Example:
+
+«Search Google for Sohar Port expansion.»
+
+The AI automatically decides:
+
+Browser 1
+→ Open Google
+→ Search Sohar Port expansion
+
+Browser 2
+→ Open Bing
+→ Search Sohar Port expansion
+
+Browser 3
+→ Search Perplexity
+
+Browser 4
+→ Search LinkedIn
+
+All browsers execute simultaneously.
+
+---
+
+Primary User Interface
+
+The main screen always consists of two sections.
+
+AI Control Room
+
+Located at the top or left.
+
+Natural language commands.
+
+Examples:
+
+- Search all browsers
+- Login to Facebook
+- Compare search results
+- Publish this post
+- Download this report
+- Extract citations
+- Open latest emails
+- Monitor news every minute
+
+The Control Room never directly renders websites.
+
+It only coordinates browser activities.
+
+---
+
+Conference Room
+
+The Conference Room contains four live browser panels.
+
+Default layout:
+
+┌──────────────┬──────────────┐
+
+│ Browser 1 │ Browser 2 │
+
+├──────────────┼──────────────┤
+
+│ Browser 3 │ Browser 4 │
+
+└──────────────┴──────────────┘
+
+Each panel is a real browser instance.
+
+Not screenshots.
+
+Not static HTML.
+
+Not recreated pages.
+
+Each browser behaves exactly like Chrome.
+
+---
+
+Browser Requirements
+
+Every browser panel supports:
+
+- Multiple tabs
+- Back
+- Forward
+- Refresh
+- Address bar
+- Downloads
+- Uploads
+- Drag & Drop
+- Clipboard
+- Developer tools (optional)
+- Cookies
+- Local Storage
+- IndexedDB
+- Session Storage
+- Password Manager (optional)
+- Notifications (configurable)
+
+---
+
+Browser Context Isolation
+
+Every browser panel owns its own Browser Context.
+
+Browser 1
+
+Google Account A
+
+Browser 2
+
+Google Account B
+
+Browser 3
+
+Facebook
+
+Browser 4
+
+LinkedIn
+
+No cookies leak.
+
+No sessions mix.
+
+Every browser behaves like an independent Chrome profile.
+
+---
+
+AI Task Routing
+
+The AI never controls browsers directly.
+
+Architecture:
+
+User
+
+↓
+
+AI Control Room
+
+↓
+
+Task Router
+
+↓
+
+Task Scheduler
+
+↓
+
+Browser Manager
+
+↓
+
+Browser 1
+
+Browser 2
+
+Browser 3
+
+Browser 4
+
+↓
+
+Result Collector
+
+↓
+
+AI Summary
+
+---
+
+Parallel Execution
+
+All browsers execute simultaneously.
+
+Example
+
+User:
+
+"Research Sohar Port"
+
+Browser 1
+
+Google
+
+Browser 2
+
+Bing
+
+Browser 3
+
+Perplexity
+
+Browser 4
+
+Wikipedia
+
+All work concurrently.
+
+The user watches every browser live.
+
+---
+
+Live Browser Status
+
+Every browser always displays its current state.
+
+Examples:
+
+Searching...
+
+Typing...
+
+Uploading...
+
+Downloading...
+
+Waiting...
+
+Login Required...
+
+Generating...
+
+Finished...
+
+The user always knows what every browser is doing.
+
+---
+
+Expand / Focus Mode
+
+This is a mandatory feature.
+
+When a browser panel is expanded:
+
+DO NOT
+
+Open a new page.
+
+DO NOT
+
+Create another browser.
+
+DO NOT
+
+Reload the website.
+
+Instead:
+
+Resize the existing browser instance.
+
+Example:
+
+Browser 2
+
+Currently:
+
+- Logged into LinkedIn
+- Uploading an image
+- AI typing a comment
+
+When Expand is clicked:
+
+The exact same browser becomes fullscreen.
+
+Everything continues.
+
+The upload continues.
+
+Typing continues.
+
+Scrolling continues.
+
+Network requests continue.
+
+Nothing restarts.
+
+When the user exits fullscreen:
+
+The browser simply returns to the grid.
+
+No refresh occurs.
+
+---
+
+Three Display Modes
+
+Grid Mode
+
+2×2 browsers.
+
+All visible.
+
+---
+
+Focus Mode
+
+One browser occupies approximately 80–90% of the screen.
+
+The remaining browsers stay visible as live thumbnails.
+
+They continue working.
+
+---
+
+Fullscreen Mode
+
+One browser fills the workspace.
+
+The remaining browsers continue running in the background.
+
+Returning restores the previous layout instantly.
+
+---
+
+AI Multi-Tasking
+
+The AI can assign different work to different browsers.
+
+Example
+
+Browser 1
+
+Search Google
+
+Browser 2
+
+Browse LinkedIn
+
+Browser 3
+
+Open Facebook
+
+Browser 4
+
+Monitor X
+
+Everything happens simultaneously.
+
+---
+
+Login Persistence
+
+The user logs into each platform only once.
+
+Examples:
+
+Browser 1
+
+Google
+
+Browser 2
+
+LinkedIn
+
+Browser 3
+
+Facebook
+
+Browser 4
+
+Instagram
+
+Sessions remain persistent until explicitly cleared.
+
+---
+
+Research Operating System
+
+Behind the browser layer is the Research OS.
+
+Responsibilities:
+
+Capability Analyzer
+
+Policy Engine
+
+Rendering Engine
+
+Browser Context Manager
+
+Evidence Engine
+
+Knowledge Extraction
+
+Citation Engine
+
+Vector Database
+
+AI Workspace
+
+These services operate transparently and should never interrupt the live browser experience.
+
+---
+
+Evidence Capture
+
+Every browser action can optionally generate evidence:
+
+- URL
+- Timestamp
+- Screenshot
+- SHA-256 hash
+- HTML snapshot
+- Extracted text
+- Metadata
+- Citation
+- AI summary
+
+Evidence is stored separately from the browser session.
+
+---
+
+Plugin Architecture
+
+Every major platform is implemented as a plugin.
+
+Examples:
+
+Google
+
+Bing
+
+DuckDuckGo
+
+Wikipedia
+
+GitHub
+
+PubMed
+
+Semantic Scholar
+
+LinkedIn
+
+Facebook
+
+Instagram
+
+X
+
+YouTube
+
+Perplexity
+
+Each plugin provides:
+
+- Authentication
+- Navigation helpers
+- Metadata extraction
+- Evidence capture
+- AI actions
+
+---
+
+Performance
+
+The platform must support:
+
+- Parallel browsing
+- Lazy rendering
+- Background tab throttling
+- Browser sleeping
+- Memory cleanup
+- Worker pools
+- GPU acceleration where available
+
+---
+
+Security
+
+Implement:
+
+- Browser context isolation
+- SSRF protection
+- DNS pinning
+- Selective CSP handling
+- Service Worker isolation
+- Secure cookie handling
+- Ephemeral proxy origins
+- Telemetry
+- Audit logging
+
+---
+
+Technology Stack
+
+Frontend
+
+- React
+- TypeScript
+- Tailwind CSS
+
+Desktop
+
+- Electron (preferred for first release)
+
+Browser Automation
+
+- Playwright
+
+Backend
+
+- Node.js
+- Fastify or Express
+
+Database
+
+- PostgreSQL
+- Redis
+- pgvector
+
+Telemetry
+
+- OpenTelemetry
+- Prometheus
+- Grafana
+
+Storage
+
+- Content Addressed Storage
+
+---
+
+Development Phases
+
+Phase 1
+
+Build the desktop application with four independent live browser panels and the AI Control Room.
+
+Phase 2
+
+Implement Browser Context Manager, login persistence, task routing, and expand/focus/fullscreen modes.
+
+Phase 3
+
+Add the Research OS components: Evidence Engine, Knowledge Extraction, plugin architecture, telemetry, and vector search.
+
+Phase 4
+
+Enterprise hardening: security, performance optimization, scalability, and plugin marketplace.
+
+---
+
+Final Implementation Directive
+
+The user experience must always resemble a professional command center.
+
+The browsers must remain live, interactive, and persistent.
+
+Expanding a browser must resize the existing instance without creating a new page or reloading the session.
+
+The AI Control Room should orchestrate all browser activity using natural language while the Research Operating System handles routing, evidence capture, analysis, and automation in the background.
+
+The browser is the visible workspace.
+
+The Research OS is the intelligence engine.
+
+Both must function together as one seamless product.
