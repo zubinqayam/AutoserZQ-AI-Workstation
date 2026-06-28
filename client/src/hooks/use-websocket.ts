@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { Room, Member, ChatMessage, RoomState, RerTask, RerAgentOutput } from "@shared/schema";
 
-export interface RerTaskWithOutputs extends Omit<RerTask, 'completedAt'> {
-  completedAt: string | null;
+export interface RerTaskWithOutputs extends RerTask {
   agentOutputs: RerAgentOutput[];
 }
 
@@ -85,6 +84,11 @@ export function useWebSocket(): UseWebSocketReturn {
             break;
           case "rer-task-update":
             updateRerTask(data.task);
+            break;
+          case "rer-complete":
+            setRerTasks(prev =>
+              prev.map(t => t.id === data.taskId ? { ...t, status: "done" } : t)
+            );
             break;
           case "error":
             console.error("WS server error:", data.message);

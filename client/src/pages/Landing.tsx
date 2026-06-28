@@ -49,7 +49,7 @@ export default function Landing() {
     const guestName = `Guest-${guestId.slice(-4).toUpperCase()}`;
     localStorage.setItem("zq_uid", guestId);
     localStorage.setItem("zq_displayName", guestName);
-    localStorage.setItem("zq_user", JSON.stringify({ id: guestId, displayName: guestName, email: "", isGuest: true }));
+    localStorage.setItem("zq_user", JSON.stringify({ id: guestId, displayName: guestName, email: "", isGuest: true, tier: "free" }));
     navigate("/workspace");
   };
 

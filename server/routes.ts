@@ -31,6 +31,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     z.object({ type: z.literal("state"), roomId: z.string(), state: z.any(), updatedBy: z.string() }),
     z.object({ type: z.literal("heartbeat"), roomId: z.string(), uid: z.string() }),
     z.object({ type: z.literal("lock"), roomId: z.string(), isOpen: z.boolean() }),
+    // Messages from server -> client (one-way; kept in schema for completeness)
+    z.object({ type: z.literal("rer-complete"), taskId: z.string(), roomId: z.string() }),
   ]);
 
   wss.on("connection", (ws: WSClient) => {
@@ -143,7 +145,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/room/:roomId/state", async (req, res) => res.json((await storage.getRoomState(req.params.roomId)) || null));
 
   // ──── Cost protection middleware ──────────────────────────────────────────────
-  const LIMITS = {
+  const LIMITS: Record<string, Record<string, number>> = {
     free:       { geminiPerDay: 20,  rerPerDay: 3,  coaPerDay: 15,  },
     pro:        { geminiPerDay: 100, rerPerDay: 15, coaPerDay: 50,  },
     enterprise: { geminiPerDay: 500, rerPerDay: 50, coaPerDay: 200, },
@@ -162,8 +164,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const uid = req.headers["x-uid"] as string;
     if (!uid) return res.status(401).json({ error: "Login required", code: "AUTH_REQUIRED" });
     const usage = await storage.getUsage(uid);
-    const tier = (await storage.getTier(uid)) as "free" | "pro" | "enterprise";
-    const limit = LIMITS[tier][field];
+    const tier = await storage.getTier(uid);
+    const limitKey = field === "geminiCalls" ? "geminiPerDay" : field === "rerLaunches" ? "rerPerDay" : "coaPerDay";
+    const limit = LIMITS[tier]?.[limitKey] ?? 20;
     const used = usage[field];
     if (used >= limit) {
       return res.status(429).json({
@@ -196,7 +199,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!uid) return res.status(401).json({ error: "Not authenticated" });
     const usage = await storage.getUsage(uid);
     const tier = await storage.getTier(uid);
-    res.json({ usage, tier, limits: LIMITS[tier as any] });
+    res.json({ usage, tier, limits: LIMITS[tier] });
   });
 
   // ZQ COA (Cognitive Overlay Agent) chat

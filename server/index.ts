@@ -44,7 +44,8 @@ app.use((req, res, next) => {
     const message = err.message || "Internal Server Error";
 
     res.status(status).json({ message });
-    throw err;
+    // Do NOT re-throw — error middleware must consume the error, not crash the process.
+    console.error("Express error:", err);
   });
 
   // importantly only setup vite in development and after

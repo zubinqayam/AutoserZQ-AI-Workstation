@@ -85,6 +85,10 @@ export default function CommandCenter({
       setInput(""); setAttachments([]);
       return;
     }
+    if (input.trim() && tryRerCommand(input.trim())) {
+      setInput(""); setAttachments([]);
+      return;
+    }
     let text = input.trim();
     if (attachments.length > 0) {
       const attStr = attachments.map(a => {
@@ -106,6 +110,16 @@ export default function CommandCenter({
     if (!input.trim()) return;
     onStartRer(input.trim(), rerMode);
     setInput(""); setAttachments([]);
+  };
+
+  const tryRerCommand = (raw: string): boolean => {
+    const t = raw.trim();
+    const m = t.match(/^@rer\s+(.+)$/i);
+    if (!m) return false;
+    const topic = m[1].trim();
+    onStartRer(topic, rerMode);
+    toast({ title: "RER Pipeline", description: `Launching ${rerMode} pipeline: "${topic}"` });
+    return true;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

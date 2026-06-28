@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useWebSocket } from "@/hooks/use-websocket";
 import RoomSidebar from "@/components/RoomSidebar";
 import AgentTab from "@/components/AgentTab";
