@@ -36,10 +36,18 @@ A 4-tab multi-agent research platform with the RER (Review → Enhance → Repor
 
 ## Command Center Shortcuts
 
-- `@tab1 <url>` — Navigate Conference Room Tab 1
-- `@tab2 <search>` — Navigate Conference Room Tab 2
-- `@all <url>` — Navigate all 4 Conference Room tabs
+- `@tab1 <url or search>` — Navigate Conference Room Panel 1
+- `@tab2 <url or search>` — Navigate Conference Room Panel 2
+- `@tab3 <url or search>` — Navigate Conference Room Panel 3
+- `@tab4 <url or search>` — Navigate Conference Room Panel 4
+- `@all <url or search>` — Navigate all 4 Conference Room panels
 - `@rer <topic>` — Launch RER pipeline with current mode
+- `@cr help` — Show Conference Room navigation guide (local, no API call)
+
+## Conference Room: iframe-compatible sites
+Works: DuckDuckGo, Bing, Wikipedia, Startpage, Brave Search, Archive.org, arXiv, Semantic Scholar, Stack Overflow, Medium, Substack, GitHub Pages, most docs/news sites.
+Blocked: Google, Twitter/X, YouTube (use embed URL), Facebook, Reddit, LinkedIn, GitHub.com.
+Google workaround: use `@tab1 https://www.startpage.com` (Google proxy that renders in iframe).
 
 ## Deployment
 

@@ -57,7 +57,22 @@ export default function ConferenceRoom() {
     if (connected) joinRoom(roomId, uid, displayName);
   }, [connected, roomId, uid, displayName, joinRoom]);
 
+  // ── @cr help event listener — injects help text locally without API call ────
+  useEffect(() => {
+    const onCrHelp = (e: Event) => {
+      const { text } = (e as CustomEvent).detail;
+      sendMessage({ type: "chat", roomId, authorUid: "supervisor-ai", text, isAI: true });
+    };
+    window.addEventListener("zq-cr-help", onCrHelp);
+    return () => window.removeEventListener("zq-cr-help", onCrHelp);
+  }, [sendMessage, roomId]);
+
   const handleSendMessage = useCallback(async (text: string) => {
+    // @cr help is handled locally — skip API call
+    if (/^@cr\s+help$/i.test(text.trim())) {
+      sendMessage({ type: "chat", roomId, authorUid: uid, text, isAI: false });
+      return;
+    }
     sendMessage({ type: "chat", roomId, authorUid: uid, text, isAI: false });
     try {
       const history = messages.slice(-8).map(m => ({ role: m.authorUid === uid ? "user" : "assistant", content: m.text }));

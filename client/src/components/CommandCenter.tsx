@@ -57,8 +57,45 @@ export default function CommandCenter({
   }, [messages]);
 
   // ── Conference Room tab routing ───────────────────────────────────────────────
+  const CR_HELP_TEXT = `ZQ CONFERENCE ROOM — QUICK REFERENCE
+
+NAVIGATION COMMANDS:
+  @tab1 <url or search>  → load in Panel 1
+  @tab2 <url or search>  → load in Panel 2
+  @tab3 <url or search>  → load in Panel 3
+  @tab4 <url or search>  → load in Panel 4
+  @all  <url or search>  → load in all 4 panels
+  @rer  <topic>          → launch RER pipeline
+
+WORKS IN PANELS (iframe-friendly):
+  DuckDuckGo · Bing · Wikipedia · Startpage
+  Brave Search · Archive.org · arXiv · SSRN
+  Stack Overflow · Medium · Substack · GitHub Pages
+  Most docs & news sites
+
+BLOCKED IN PANELS (X-Frame-Options):
+  Google · Twitter/X · YouTube · Facebook
+  Reddit · LinkedIn · GitHub.com (main site)
+
+WORKAROUNDS FOR GOOGLE:
+  • @tab1 https://www.startpage.com  (Google proxy)
+  • @tab1 https://web.archive.org/web/*/URL  (cached)
+  • Use the ↗ button to open any URL in a real tab
+  • Switch to Bing or DuckDuckGo in the search selector
+
+Type @cr help anytime to see this guide.`;
+
   const tryTabRoute = (raw: string): boolean => {
     const t = raw.trim();
+
+    // @cr help — local Conference Room guide
+    if (/^@cr\s+help$/i.test(t)) {
+      onSendMessage("@cr help");
+      // inject the help text as a local AI message via a custom event
+      window.dispatchEvent(new CustomEvent("zq-cr-help", { detail: { text: CR_HELP_TEXT } }));
+      return true;
+    }
+
     // @tab1 <url/search>  |  @tab2 …  |  @tab3 …  |  @tab4 …  |  @all <url/search>
     const m = t.match(/^@(tab[1-4]|all)\s+(.+)$/i);
     if (!m) return false;
@@ -401,7 +438,7 @@ export default function CommandCenter({
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Research topic, question, or drop files…"
+                placeholder="Research topic · @rer <topic> · @tab1 <url> · @cr help"
                 className="resize-none text-xs min-h-[64px] bg-transparent border-0 focus-visible:ring-0 rounded-xl"
                 data-testid="input-command"
               />
