@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,8 +6,9 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import {
   FlaskConical, Brain, Layers, Eye, Zap, Shield, ArrowRight,
-  GitBranch, Loader2, CheckCircle, Activity,
+  GitBranch, Loader2, CheckCircle, Activity, Mail,
 } from "lucide-react";
+import { SiGoogle, SiGithub } from "react-icons/si";
 
 export default function Landing() {
   const [, navigate] = useLocation();
@@ -17,6 +18,34 @@ export default function Landing() {
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [loading, setLoading] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState<"google" | "github" | null>(null);
+
+  // Handle OAuth callback — server redirects back to /?zq_oauth=<base64>
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauthPayload = params.get("zq_oauth");
+    const oauthError = params.get("zq_oauth_error");
+
+    if (oauthError) {
+      toast({ title: "Sign-in failed", description: decodeURIComponent(oauthError), variant: "destructive" });
+      window.history.replaceState({}, "", "/");
+      return;
+    }
+
+    if (oauthPayload) {
+      try {
+        const user = JSON.parse(atob(oauthPayload.replace(/-/g, "+").replace(/_/g, "/")));
+        localStorage.setItem("zq_user", JSON.stringify(user));
+        localStorage.setItem("zq_uid", user.id);
+        localStorage.setItem("zq_displayName", user.displayName);
+        window.history.replaceState({}, "", "/");
+        navigate("/workspace");
+      } catch {
+        toast({ title: "Sign-in error", description: "Could not process sign-in response.", variant: "destructive" });
+        window.history.replaceState({}, "", "/");
+      }
+    }
+  }, []);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,6 +72,26 @@ export default function Landing() {
     } finally { setLoading(false); }
   };
 
+  const handleOAuth = async (provider: "google" | "github") => {
+    setOauthLoading(provider);
+    // Check if OAuth is configured before redirecting
+    try {
+      const res = await fetch(`/api/auth/${provider}`);
+      // If the server returns 501, credentials not configured
+      if (res.status === 501) {
+        const data = await res.json();
+        toast({ title: `${provider === "google" ? "Google" : "GitHub"} sign-in not configured`, description: data.error, variant: "destructive" });
+        setOauthLoading(null);
+        return;
+      }
+      // If the server redirected (2xx or 3xx with redirect), follow it
+      // For redirect responses that fetch followed, check the URL
+    } catch {
+      // If fetch threw, the server likely issued a redirect which is fine — just navigate
+    }
+    // Navigate to the OAuth start URL (triggers server redirect to provider)
+    window.location.href = `/api/auth/${provider}`;
+  };
 
   const continueAsGuest = () => {
     const guestId = `guest-${Date.now().toString(36)}`;
@@ -55,14 +104,14 @@ export default function Landing() {
 
   return (
     <div className="min-h-screen bg-[#0a0d14] text-white flex flex-col overflow-hidden">
-      {/* Status bar at top */}
+      {/* Status bar */}
       <div className="w-full border-b border-white/5 bg-black/30 px-6 py-1.5 flex items-center gap-6 text-[10px] font-mono text-white/30 flex-shrink-0">
         <span className="flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
           KERNEL: OK
         </span>
         <span>GEMINI 2.5 FLASH · ACTIVE</span>
-        <span className="ml-auto">ZQ WORKSTATION V2.4</span>
+        <span className="ml-auto">ZQ WORKSTATION V3.0</span>
         <span>REGION: CLOUD</span>
       </div>
 
@@ -101,11 +150,10 @@ export default function Landing() {
       <div className="flex flex-1 min-h-0">
         {/* Left — Hero + Features */}
         <div className="flex-1 flex flex-col justify-center px-8 lg:px-16 py-12 min-w-0">
-          {/* Hero */}
           <div className="max-w-xl">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-primary/30 bg-primary/5 text-xs text-primary mb-6">
               <Activity className="w-3 h-3" />
-              Multi-Agent Research Orchestration · V2.4 Kernel
+              Multi-Agent Research Orchestration · V3.0 Kernel
             </div>
             <h1 className="text-4xl lg:text-5xl font-bold leading-tight text-white mb-4">
               Research that<br />
@@ -195,6 +243,43 @@ export default function Landing() {
               </p>
             </div>
 
+            {/* Social sign-in buttons */}
+            <div className="space-y-2 mb-4">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full border-white/10 bg-white/5 text-white hover:text-white gap-2.5 justify-center"
+                onClick={() => handleOAuth("google")}
+                disabled={oauthLoading !== null}
+                data-testid="btn-google-signin"
+              >
+                {oauthLoading === "google"
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <SiGoogle className="w-4 h-4" />}
+                Continue with Google
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full border-white/10 bg-white/5 text-white hover:text-white gap-2.5 justify-center"
+                onClick={() => handleOAuth("github")}
+                disabled={oauthLoading !== null}
+                data-testid="btn-github-signin"
+              >
+                {oauthLoading === "github"
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <SiGithub className="w-4 h-4" />}
+                Continue with GitHub
+              </Button>
+            </div>
+
+            {/* Divider */}
+            <div className="relative flex items-center gap-3 mb-4">
+              <div className="flex-1 h-px bg-white/8" />
+              <span className="text-[10px] text-white/25 font-mono uppercase tracking-widest flex-shrink-0">or</span>
+              <div className="flex-1 h-px bg-white/8" />
+            </div>
+
             {/* Email form */}
             <form onSubmit={handleEmailAuth} className="space-y-3">
               {mode === "signup" && (
@@ -237,12 +322,12 @@ export default function Landing() {
               </div>
               <Button
                 type="submit"
-                className="w-full bg-primary text-white mt-1"
+                className="w-full bg-primary text-white mt-1 gap-2"
                 disabled={loading}
                 data-testid="btn-auth-submit"
               >
-                {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                {mode === "signin" ? "Sign in" : "Create account"}
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                {mode === "signin" ? "Sign in with email" : "Create account"}
               </Button>
             </form>
 

@@ -232,6 +232,115 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ user });
   });
 
+  // ── OAuth helpers ────────────────────────────────────────────────────────────
+  const oauthStates = new Map<string, number>(); // state → expiry ms
+
+  function getBaseUrl(req: any) {
+    const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    return `${proto}://${req.get("host")}`;
+  }
+
+  function oauthRedirect(res: any, user: any) {
+    const payload = Buffer.from(JSON.stringify(user)).toString("base64url");
+    res.redirect(`/?zq_oauth=${payload}`);
+  }
+
+  // ── Google OAuth ─────────────────────────────────────────────────────────────
+  app.get("/api/auth/google", (req, res) => {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) return res.status(501).json({ error: "Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET." });
+    const state = randomUUID();
+    oauthStates.set(state, Date.now() + 10 * 60 * 1000);
+    const redirectUri = `${getBaseUrl(req)}/api/auth/google/callback`;
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "openid email profile");
+    url.searchParams.set("state", state);
+    url.searchParams.set("access_type", "online");
+    res.redirect(url.toString());
+  });
+
+  app.get("/api/auth/google/callback", async (req, res) => {
+    try {
+      const { code, state } = req.query as { code?: string; state?: string };
+      if (!code || !state || !oauthStates.has(state) || oauthStates.get(state)! < Date.now()) {
+        return res.redirect("/?zq_oauth_error=invalid_state");
+      }
+      oauthStates.delete(state);
+      const clientId = process.env.GOOGLE_CLIENT_ID!;
+      const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
+      const redirectUri = `${getBaseUrl(req)}/api/auth/google/callback`;
+      // Exchange code for tokens
+      const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: "authorization_code" }).toString(),
+      });
+      if (!tokenRes.ok) throw new Error("Token exchange failed");
+      const { access_token } = await tokenRes.json() as any;
+      // Get user info
+      const infoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+        headers: { Authorization: `Bearer ${access_token}` },
+      });
+      if (!infoRes.ok) throw new Error("User info fetch failed");
+      const info = await infoRes.json() as any;
+      const user = await storage.findOrCreateOAuthUser(info.email, info.name || info.email.split("@")[0], "google");
+      oauthRedirect(res, user);
+    } catch (err: any) {
+      res.redirect(`/?zq_oauth_error=${encodeURIComponent(err.message || "google_error")}`);
+    }
+  });
+
+  // ── GitHub OAuth ─────────────────────────────────────────────────────────────
+  app.get("/api/auth/github", (req, res) => {
+    const clientId = process.env.GITHUB_CLIENT_ID;
+    if (!clientId) return res.status(501).json({ error: "GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET." });
+    const state = randomUUID();
+    oauthStates.set(state, Date.now() + 10 * 60 * 1000);
+    const redirectUri = `${getBaseUrl(req)}/api/auth/github/callback`;
+    const url = new URL("https://github.com/login/oauth/authorize");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("scope", "user:email");
+    url.searchParams.set("state", state);
+    res.redirect(url.toString());
+  });
+
+  app.get("/api/auth/github/callback", async (req, res) => {
+    try {
+      const { code, state } = req.query as { code?: string; state?: string };
+      if (!code || !state || !oauthStates.has(state) || oauthStates.get(state)! < Date.now()) {
+        return res.redirect("/?zq_oauth_error=invalid_state");
+      }
+      oauthStates.delete(state);
+      const clientId = process.env.GITHUB_CLIENT_ID!;
+      const clientSecret = process.env.GITHUB_CLIENT_SECRET!;
+      // Exchange code for token
+      const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+      });
+      if (!tokenRes.ok) throw new Error("Token exchange failed");
+      const { access_token } = await tokenRes.json() as any;
+      // Get user info
+      const [userRes, emailRes] = await Promise.all([
+        fetch("https://api.github.com/user", { headers: { Authorization: `Bearer ${access_token}`, "User-Agent": "ZQ-Workstation" } }),
+        fetch("https://api.github.com/user/emails", { headers: { Authorization: `Bearer ${access_token}`, "User-Agent": "ZQ-Workstation" } }),
+      ]);
+      if (!userRes.ok) throw new Error("GitHub user fetch failed");
+      const ghUser = await userRes.json() as any;
+      const emails = emailRes.ok ? (await emailRes.json() as any[]) : [];
+      const primaryEmail = emails.find((e: any) => e.primary && e.verified)?.email || ghUser.email || `${ghUser.login}@github.com`;
+      const user = await storage.findOrCreateOAuthUser(primaryEmail, ghUser.name || ghUser.login, "github");
+      oauthRedirect(res, user);
+    } catch (err: any) {
+      res.redirect(`/?zq_oauth_error=${encodeURIComponent(err.message || "github_error")}`);
+    }
+  });
+
   app.post("/api/coa/chat", requireAuth, checkRateLimit("coaCalls"), async (req, res) => {
     try {
       const { messages, workspaceContext } = req.body;

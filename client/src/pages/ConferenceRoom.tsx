@@ -726,10 +726,10 @@ const SEARCH_ENGINES: Record<string, string> = {
 };
 
 const TAB_DEFAULTS = [
-  { label: "Browser 1", url: "https://duckduckgo.com",                color: "#6366f1" },
-  { label: "Browser 2", url: "https://en.wikipedia.org/wiki/Main_Page", color: "#f97316" },
-  { label: "Browser 3", url: "https://www.bing.com",                  color: "#10b981" },
-  { label: "Browser 4", url: "https://search.brave.com",              color: "#a855f7" },
+  { label: "Browser 1", url: "https://duckduckgo.com",                       color: "#6366f1" },
+  { label: "Browser 2", url: "https://en.wikipedia.org/wiki/Main_Page",      color: "#f97316" },
+  { label: "Browser 3", url: "https://www.startpage.com",                    color: "#10b981" },
+  { label: "Browser 4", url: "https://arxiv.org",                            color: "#a855f7" },
 ];
 
 type ViewMode = "grid" | "focus" | "fullscreen";

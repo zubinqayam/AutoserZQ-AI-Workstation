@@ -33,6 +33,24 @@ A 4-tab multi-agent research platform with the RER (Review → Enhance → Repor
 - `GEMINI_API_KEY` — Google Gemini API key (required for AI features)
 - `SESSION_SECRET` — Session signing secret
 - `PORT` — Server port (default: 5000)
+- `GOOGLE_CLIENT_ID` — Google OAuth Client ID (optional, enables "Continue with Google")
+- `GOOGLE_CLIENT_SECRET` — Google OAuth Client Secret (optional)
+- `GITHUB_CLIENT_ID` — GitHub OAuth App Client ID (optional, enables "Continue with GitHub")
+- `GITHUB_CLIENT_SECRET` — GitHub OAuth App Client Secret (optional)
+
+## Setting up Google Sign-In
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials
+2. Create OAuth 2.0 Client ID (Web application)
+3. Add Authorized redirect URI: `https://your-app.replit.app/api/auth/google/callback`
+4. Add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to Replit Secrets
+
+## Setting up GitHub Sign-In
+
+1. Go to [GitHub Settings → Developer Settings → OAuth Apps](https://github.com/settings/developers)
+2. Create a new OAuth App
+3. Set Authorization callback URL: `https://your-app.replit.app/api/auth/github/callback`
+4. Add `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` to Replit Secrets
 
 ## Command Center Shortcuts
 

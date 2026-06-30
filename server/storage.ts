@@ -28,6 +28,7 @@ export interface IStorage {
   createUser(email: string, displayName: string, password: string): Promise<Omit<AppUser, "passwordHash">>;
   loginUser(email: string, password: string): Promise<Omit<AppUser, "passwordHash"> | null>;
   getUserById(id: string): Promise<Omit<AppUser, "passwordHash"> | undefined>;
+  findOrCreateOAuthUser(email: string, displayName: string, provider: "google" | "github"): Promise<Omit<AppUser, "passwordHash">>;
   getRoom(id: string): Promise<Room | undefined>;
   createRoom(room: InsertRoom): Promise<Room>;
   updateRoom(id: string, updates: Partial<Room>): Promise<Room | undefined>;
@@ -89,6 +90,26 @@ export class MemStorage implements IStorage {
   async getUserById(id: string) {
     const user = this.users.get(id);
     if (!user) return undefined;
+    const { passwordHash: _, ...safe } = user;
+    return safe;
+  }
+
+  async findOrCreateOAuthUser(email: string, displayName: string, provider: "google" | "github") {
+    const existing = Array.from(this.users.values()).find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (existing) {
+      const { passwordHash: _, ...safe } = existing;
+      return safe;
+    }
+    const user: AppUser = {
+      id: `user-${randomUUID().slice(0, 8)}`,
+      email: email.toLowerCase().trim(),
+      displayName: displayName.trim() || email.split("@")[0],
+      passwordHash: "",
+      createdAt: new Date(),
+      provider,
+      tier: "free",
+    };
+    this.users.set(user.id, user);
     const { passwordHash: _, ...safe } = user;
     return safe;
   }
