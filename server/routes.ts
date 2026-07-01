@@ -232,6 +232,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ user });
   });
 
+  // Debug: shows exactly which redirect URI will be sent to Google/GitHub
+  app.get("/api/auth/debug-uri", (req, res) => {
+    const base = getBaseUrl(req);
+    res.json({
+      detectedBase: base,
+      googleRedirectUri: process.env.GOOGLE_REDIRECT_URI || `${base}/api/auth/google/callback`,
+      githubRedirectUri: process.env.GITHUB_REDIRECT_URI || `${base}/api/auth/github/callback`,
+      googleClientIdSet: !!process.env.GOOGLE_CLIENT_ID,
+      githubClientIdSet: !!process.env.GITHUB_CLIENT_ID,
+      proto: req.protocol,
+      host: req.get("host"),
+    });
+  });
+
   // ── OAuth helpers ────────────────────────────────────────────────────────────
   const oauthStates = new Map<string, number>(); // state → expiry ms
 
@@ -250,7 +264,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!clientId) return res.status(501).json({ error: "Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET." });
     const state = randomUUID();
     oauthStates.set(state, Date.now() + 10 * 60 * 1000);
-    const redirectUri = `${getBaseUrl(req)}/api/auth/google/callback`;
+    const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${getBaseUrl(req)}/api/auth/google/callback`;
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     url.searchParams.set("client_id", clientId);
     url.searchParams.set("redirect_uri", redirectUri);
@@ -270,7 +284,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       oauthStates.delete(state);
       const clientId = process.env.GOOGLE_CLIENT_ID!;
       const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
-      const redirectUri = `${getBaseUrl(req)}/api/auth/google/callback`;
+      const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${getBaseUrl(req)}/api/auth/google/callback`;
       // Exchange code for tokens
       const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
