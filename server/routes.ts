@@ -250,6 +250,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const oauthStates = new Map<string, number>(); // state → expiry ms
 
   function getBaseUrl(req: any) {
+    // REPLIT_DOMAINS is the authoritative public hostname Replit injects in all environments
+    if (process.env.REPLIT_DOMAINS) {
+      const domain = process.env.REPLIT_DOMAINS.split(",")[0].trim();
+      return `https://${domain}`;
+    }
     return `${req.protocol}://${req.get("host")}`;
   }
 
