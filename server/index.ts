@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
 const app = express();
+app.set("trust proxy", 1); // Replit reverse proxy — makes req.protocol = "https" in production
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 

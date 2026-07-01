@@ -236,8 +236,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const oauthStates = new Map<string, number>(); // state → expiry ms
 
   function getBaseUrl(req: any) {
-    const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    return `${proto}://${req.get("host")}`;
+    return `${req.protocol}://${req.get("host")}`;
   }
 
   function oauthRedirect(res: any, user: any) {
