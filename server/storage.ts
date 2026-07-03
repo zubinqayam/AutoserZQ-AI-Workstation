@@ -5,10 +5,13 @@ import {
   type RoomState, type InsertRoomState,
   type RerTask, type InsertRerTask,
   type RerAgentOutput, type InsertRerAgentOutput,
+  users,
 } from "@shared/schema";
 import { randomUUID, createHash } from "crypto";
+import { db } from "./db";
+import { eq } from "drizzle-orm";
 
-// ── User types (in-memory only, not in shared schema to keep DB-free) ─────────
+// ── User types — persisted in Postgres so accounts survive restarts/redeploys ─
 export interface AppUser {
   id: string;
   email: string;
@@ -52,7 +55,6 @@ export interface IStorage {
 }
 
 export class MemStorage implements IStorage {
-  private users = new Map<string, AppUser>();
   private rooms = new Map<string, Room>();
   private members = new Map<string, Member>();
   private chatMessages = new Map<string, ChatMessage>();
@@ -60,58 +62,55 @@ export class MemStorage implements IStorage {
   private rerTasks = new Map<string, RerTask>();
   private rerAgentOutputs = new Map<string, RerAgentOutput>();
 
-  // ── User auth ───────────────────────────────────────────────────────────────
+  // ── User auth (persisted in Postgres) ─────────────────────────────────────────
   async createUser(email: string, displayName: string, password: string) {
-    const existing = Array.from(this.users.values()).find(u => u.email.toLowerCase() === email.toLowerCase());
+    const normEmail = email.toLowerCase().trim();
+    const [existing] = await db.select().from(users).where(eq(users.email, normEmail));
     if (existing) throw new Error("Email already registered");
-    const user: AppUser = {
-      id: `user-${randomUUID().slice(0,8)}`,
-      email: email.toLowerCase().trim(),
+    const [user] = await db.insert(users).values({
+      id: `user-${randomUUID().slice(0, 8)}`,
+      email: normEmail,
       displayName: displayName.trim(),
       passwordHash: hashPassword(password),
-      createdAt: new Date(),
       provider: "email",
       tier: "free",
-    };
-    this.users.set(user.id, user);
+    }).returning();
     const { passwordHash: _, ...safe } = user;
-    return safe;
+    return safe as Omit<AppUser, "passwordHash">;
   }
 
   async loginUser(email: string, password: string) {
-    const user = Array.from(this.users.values()).find(
-      u => u.email.toLowerCase() === email.toLowerCase() && u.passwordHash === hashPassword(password)
-    );
-    if (!user) return null;
+    const normEmail = email.toLowerCase().trim();
+    const [user] = await db.select().from(users).where(eq(users.email, normEmail));
+    if (!user || user.passwordHash !== hashPassword(password)) return null;
     const { passwordHash: _, ...safe } = user;
-    return safe;
+    return safe as Omit<AppUser, "passwordHash">;
   }
 
   async getUserById(id: string) {
-    const user = this.users.get(id);
+    const [user] = await db.select().from(users).where(eq(users.id, id));
     if (!user) return undefined;
     const { passwordHash: _, ...safe } = user;
-    return safe;
+    return safe as Omit<AppUser, "passwordHash">;
   }
 
   async findOrCreateOAuthUser(email: string, displayName: string, provider: "google" | "github") {
-    const existing = Array.from(this.users.values()).find(u => u.email.toLowerCase() === email.toLowerCase());
+    const normEmail = email.toLowerCase().trim();
+    const [existing] = await db.select().from(users).where(eq(users.email, normEmail));
     if (existing) {
       const { passwordHash: _, ...safe } = existing;
-      return safe;
+      return safe as Omit<AppUser, "passwordHash">;
     }
-    const user: AppUser = {
+    const [user] = await db.insert(users).values({
       id: `user-${randomUUID().slice(0, 8)}`,
-      email: email.toLowerCase().trim(),
+      email: normEmail,
       displayName: displayName.trim() || email.split("@")[0],
       passwordHash: "",
-      createdAt: new Date(),
       provider,
       tier: "free",
-    };
-    this.users.set(user.id, user);
+    }).returning();
     const { passwordHash: _, ...safe } = user;
-    return safe;
+    return safe as Omit<AppUser, "passwordHash">;
   }
 
   async getRoom(id: string) { return this.rooms.get(id); }
@@ -258,7 +257,7 @@ export class MemStorage implements IStorage {
 
   // ── Commercial tier (future) ───────────────────────────────────────────────
   async getTier(uid: string): Promise<"free" | "pro" | "enterprise"> {
-    const user = this.users.get(uid);
+    const [user] = await db.select().from(users).where(eq(users.id, uid));
     return (user?.tier as any) || "free";
   }
 }

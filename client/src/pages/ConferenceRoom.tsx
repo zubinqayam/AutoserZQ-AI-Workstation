@@ -12,7 +12,7 @@ import {
   AlertCircle, Loader2, ExternalLink, Settings, BookOpen,
   Shield, Eye, Activity, Search, Brain, Cpu, Gauge,
   Monitor, ChevronLeft, ChevronRight, RefreshCw, Globe,
-  RotateCcw, Terminal, Camera, Archive, Maximize2, Minimize2,
+  RotateCcw, Terminal, Camera, Archive, Maximize2, Minimize2, AlertTriangle,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { RerTask, RerAgentOutput } from "@shared/schema";
@@ -743,6 +743,7 @@ interface BrowserTab {
   color: string;
   loading: boolean;
   status: string;
+  blocked: boolean;
 }
 
 interface EvidenceCapture {
@@ -772,8 +773,19 @@ function statusColor(s: string) {
 
 function ConferenceRoomBrowserView() {
   const [tabs, setTabs] = useState<BrowserTab[]>(
-    TAB_DEFAULTS.map(d => ({ ...d, inputUrl: d.url, history: [d.url], histIdx: 0, loading: false, status: "Ready" }))
+    TAB_DEFAULTS.map(d => ({ ...d, inputUrl: d.url, history: [d.url], histIdx: 0, loading: false, status: "Ready", blocked: false }))
   );
+  const blockTimers = useRef<Array<ReturnType<typeof setTimeout> | null>>([null, null, null, null]);
+
+  const armBlockTimer = useCallback((tabIdx: number) => {
+    if (blockTimers.current[tabIdx]) clearTimeout(blockTimers.current[tabIdx]!);
+    blockTimers.current[tabIdx] = setTimeout(() => {
+      setTabs(prev => prev.map((t, idx) => {
+        if (idx !== tabIdx || !t.loading) return t;
+        return { ...t, loading: false, blocked: true, status: "Blocked" };
+      }));
+    }, 6000);
+  }, []);
   const [engine, setEngine] = useState("duckduckgo");
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [focusedPanel, setFocusedPanel] = useState(0);
@@ -795,36 +807,43 @@ function ConferenceRoomBrowserView() {
     setTabs(prev => prev.map((t, i) => {
       if (i !== tabIdx) return t;
       const hist = t.history.slice(0, t.histIdx + 1);
-      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true, status: "Loading..." };
+      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true, status: "Loading...", blocked: false };
     }));
+    armBlockTimer(tabIdx);
     if (fromCmd) setLog(l => [`[${new Date().toLocaleTimeString()}] Browser ${tabIdx + 1} → ${url}`, ...l].slice(0, 80));
-  }, [engine]);
+  }, [engine, armBlockTimer]);
 
   const navigateAll = useCallback((rawUrl: string) => {
     const url = toUrl(rawUrl, engine);
     if (!url) return;
     setTabs(prev => prev.map(t => {
       const hist = t.history.slice(0, t.histIdx + 1);
-      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true, status: "Loading..." };
+      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true, status: "Loading...", blocked: false };
     }));
+    [0, 1, 2, 3].forEach(armBlockTimer);
     setLog(l => [`[${new Date().toLocaleTimeString()}] ALL BROWSERS → ${url}`, ...l].slice(0, 80));
-  }, [engine]);
+  }, [engine, armBlockTimer]);
 
-  const goBack  = (i: number) => setTabs(prev => prev.map((t, idx) => {
+  const goBack  = (i: number) => { setTabs(prev => prev.map((t, idx) => {
     if (idx !== i || t.histIdx <= 0) return t;
     const ni = t.histIdx - 1;
-    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true, status: "Navigating..." };
-  }));
-  const goFwd   = (i: number) => setTabs(prev => prev.map((t, idx) => {
+    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true, status: "Navigating...", blocked: false };
+  })); armBlockTimer(i); };
+  const goFwd   = (i: number) => { setTabs(prev => prev.map((t, idx) => {
     if (idx !== i || t.histIdx >= t.history.length - 1) return t;
     const ni = t.histIdx + 1;
-    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true, status: "Navigating..." };
-  }));
+    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true, status: "Navigating...", blocked: false };
+  })); armBlockTimer(i); };
   const refresh = (i: number) => {
-    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: true, status: "Refreshing..." }));
+    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: true, status: "Refreshing...", blocked: false }));
+    armBlockTimer(i);
     if (iframeRefs[i].current) { try { iframeRefs[i].current!.src = tabs[i].url; } catch {} }
   };
-  const onLoad  = (i: number) => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: false, status: "Ready" }));
+  const openExternal = (i: number) => window.open(tabs[i].url, "_blank");
+  const onLoad  = (i: number) => {
+    if (blockTimers.current[i]) { clearTimeout(blockTimers.current[i]!); blockTimers.current[i] = null; }
+    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: false, status: "Ready", blocked: false }));
+  };
   const setLabel = (i: number, label: string) => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, label }));
   const handleKey = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") navigate(i, tabs[i].inputUrl);
@@ -1078,6 +1097,25 @@ function ConferenceRoomBrowserView() {
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/70 pointer-events-none gap-2">
                   <Loader2 className="w-6 h-6 animate-spin" style={{ color: COLOR_HEX[i] }} />
                   <span className="text-[10px] font-mono" style={{ color: COLOR_HEX[i] }}>{tab.status}</span>
+                </div>
+              )}
+              {tab.blocked && !tab.loading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 gap-3 px-6 text-center">
+                  <AlertTriangle className="w-6 h-6 text-amber-500" />
+                  <p className="text-xs font-medium text-card-foreground">This site refused to load in a panel</p>
+                  <p className="text-[10px] text-muted-foreground max-w-[220px]">
+                    Many sites (Google, YouTube, X, Facebook, Reddit, LinkedIn, GitHub.com) block iframe embedding for security. Try a compatible site or open it externally.
+                  </p>
+                  <div className="flex gap-2">
+                    <button onClick={() => openExternal(i)} data-testid={`btn-open-external-blocked-${i+1}`}
+                      className="text-[10px] px-2.5 py-1 rounded-md bg-primary text-primary-foreground hover-elevate active-elevate-2">
+                      Open externally
+                    </button>
+                    <button onClick={() => refresh(i)} data-testid={`btn-retry-blocked-${i+1}`}
+                      className="text-[10px] px-2.5 py-1 rounded-md border border-border hover-elevate active-elevate-2">
+                      Retry
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

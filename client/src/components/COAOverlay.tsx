@@ -139,9 +139,16 @@ export default function COAOverlay({ rerTasks }: COAOverlayProps) {
   const activeTask = rerTasks.find(t => t.status === "running") || rerTasks[0];
 
   const buildContext = useCallback((): string => {
-    if (!activeTask) return "Workspace is idle — no active pipeline task.";
+    const page = typeof window !== "undefined" ? window.location.pathname : "unknown";
+    const user = (() => { try { return JSON.parse(localStorage.getItem("zq_user") || "null"); } catch { return null; } })();
+    const base = [
+      `Current page: ${page}`,
+      `Logged in as: ${user ? `${user.displayName || user.email} (${user.isGuest ? "guest" : user.provider || "email"})` : "not logged in"}`,
+    ];
+    if (!activeTask) return [...base, "Pipeline: idle — no active RER task running."].join("\n");
     const outputs = activeTask.agentOutputs ?? [];
     return [
+      ...base,
       `Research topic: "${activeTask.topic}"`,
       `Pipeline mode: ${activeTask.mode}, status: ${activeTask.status}, step: ${activeTask.currentStep}/4`,
       ...TAB_LABELS.map((lbl, i) => {
