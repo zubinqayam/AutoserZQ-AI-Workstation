@@ -6,6 +6,9 @@ import { runTabCycle, generateResearchResponse, generateCOAResponse, generateCOA
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { TAB_ROLES, insertRoomSchema } from "@shared/schema";
+import { eventBus } from "./core/eventBus";
+import { missionManager } from "./core/missionManager";
+import { getWorkspaceSnapshot, buildAgentContext } from "./core/workspaceEngine";
 
 interface WSClient extends WebSocket {
   roomId?: string;
@@ -24,6 +27,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     });
   };
+
+  // Bridge the internal SMCBOS event bus to the room's WebSocket clients. This
+  // is additive: it sends a new "event" message type that existing clients
+  // safely ignore (their handler has no default case), so nothing breaks while
+  // future UI can subscribe to mission/task/workspace events.
+  eventBus.on("*", (evt) => {
+    broadcastToRoom(evt.roomId, { type: "event", event: { type: evt.type, payload: evt.payload, at: evt.at } });
+  });
 
   const wsSchema = z.union([
     z.object({ type: z.literal("join"), roomId: z.string(), uid: z.string(), displayName: z.string() }),
@@ -360,11 +371,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Merge the client-supplied context with the authoritative server-side
+  // workspace snapshot (when a roomId is provided) so agents reason over shared
+  // state. roomId is optional → fully backward compatible with existing callers.
+  const mergeAgentContext = async (roomId: unknown, clientContext: unknown): Promise<string> => {
+    const base = typeof clientContext === "string" && clientContext.trim() ? clientContext : "No workspace context provided.";
+    if (typeof roomId === "string" && roomId) {
+      try {
+        const serverContext = await buildAgentContext(roomId);
+        return `${serverContext}\n\n=== CLIENT-SUPPLIED CONTEXT ===\n${base}`;
+      } catch (e) {
+        console.error("buildAgentContext failed (non-fatal):", e);
+      }
+    }
+    return base;
+  };
+
   app.post("/api/coa/chat", requireAuth, checkRateLimit("coaCalls"), async (req, res) => {
     try {
-      const { messages, workspaceContext } = req.body;
+      const { messages, workspaceContext, roomId } = req.body;
       if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
-      const context = typeof workspaceContext === "string" ? workspaceContext : "No workspace context provided.";
+      const context = await mergeAgentContext(roomId, workspaceContext);
       res.json({ text: await generateCOAResponse(messages, context) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "COA unavailable" });
@@ -374,9 +401,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ZQ COA multi-agent endpoint
   app.post("/api/coa/multi-agent", requireAuth, checkRateLimit("coaCalls"), async (req, res) => {
     try {
-      const { message, history, workspaceContext } = req.body;
+      const { message, history, workspaceContext, roomId } = req.body;
       if (!message) return res.status(400).json({ error: "message required" });
-      const ctx = typeof workspaceContext === "string" ? workspaceContext : "No context.";
+      const ctx = await mergeAgentContext(roomId, workspaceContext);
       const responses = await generateCOAMultiAgentResponse(message, Array.isArray(history) ? history : [], ctx);
       res.json({ responses });
     } catch (err: any) {
@@ -400,7 +427,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         )
       );
 
-      const broadcast = (msg: any) => broadcastToRoom(roomId, msg);
+      // Additively mirror this RER run as a Mission so the orchestration layer +
+      // event bus reflect it. Purely telemetry — must never break the pipeline.
+      let missionId: string | null = null;
+      let missionTaskIds: string[] = [];
+      try {
+        const mission = await missionManager.createMission({
+          roomId,
+          title: `RER: ${topic}`.slice(0, 120),
+          objective: topic,
+          kind: "rer",
+          status: "running",
+          createdBy: (req.headers["x-uid"] as string) || null,
+        });
+        missionId = mission.id;
+        const createdTasks = await Promise.all(
+          TAB_ROLES.map((role, i) =>
+            missionManager.addTask({ missionId: mission.id, title: `${role} (Tab ${i + 1})`, kind: "rer-tab", status: "running", sequence: i })
+          )
+        );
+        missionTaskIds = createdTasks.map((t) => t.id);
+      } catch (e) {
+        console.error("RER mission mirror (non-fatal):", e);
+      }
+
+      const broadcast = (msg: any) => {
+        broadcastToRoom(roomId, msg);
+        // When the pipeline finishes, close out the mirrored mission + tasks.
+        if (msg.type === "rer-complete" && missionId) {
+          (async () => {
+            try {
+              await Promise.all(missionTaskIds.map((id) => missionManager.completeTask(id)));
+              await missionManager.updateMissionStatus(missionId!, "completed");
+            } catch (e) {
+              console.error("RER mission completion (non-fatal):", e);
+            }
+          })();
+        }
+      };
       broadcast({ type: "rer-task-update", task: { ...task, agentOutputs } });
       res.json({ taskId, task, agentOutputs });
 
@@ -425,6 +489,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const tasks = await storage.getRoomRerTasks(req.params.roomId);
     res.json(await Promise.all(tasks.map(async t => ({ ...t, agentOutputs: await storage.getTaskAgentOutputs(t.id) }))));
   });
+
+  // ── SMCBOS: Mission / Task / Workspace API (foundation, no UI yet) ───────────
+  app.post("/api/mission", requireAuth, async (req, res) => {
+    try {
+      const { roomId, title, objective, kind } = req.body;
+      if (!roomId || !title || !objective) return res.status(400).json({ error: "roomId, title, objective required" });
+      const mission = await missionManager.createMission({
+        roomId, title, objective, kind: kind || "custom", status: "pending", createdBy: (req as any).user?.id || null,
+      });
+      res.json(mission);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/mission/:id", async (req, res) => {
+    const mission = await missionManager.getMissionWithTasks(req.params.id);
+    if (!mission) return res.status(404).json({ error: "Mission not found" });
+    res.json(mission);
+  });
+
+  app.get("/api/room/:roomId/missions", async (req, res) => res.json(await missionManager.listMissions(req.params.roomId)));
+
+  app.post("/api/mission/:id/task", requireAuth, async (req, res) => {
+    try {
+      const { title, kind, sequence, input } = req.body;
+      if (!title) return res.status(400).json({ error: "title required" });
+      const task = await missionManager.addTask({
+        missionId: req.params.id, title, kind: kind || "generic", status: "pending", sequence: sequence ?? 0, input: input ?? null,
+      });
+      res.json(task);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.patch("/api/task/:id", requireAuth, async (req, res) => {
+    try {
+      const { status, output, error } = req.body;
+      let task;
+      if (status === "running") task = await missionManager.startTask(req.params.id, output);
+      else if (status === "done") task = await missionManager.completeTask(req.params.id, output);
+      else if (status === "error") task = await missionManager.failTask(req.params.id, error || "unknown error");
+      else return res.status(400).json({ error: "status must be running|done|error" });
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      res.json(task);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/workspace/:roomId/snapshot", async (req, res) => res.json(await getWorkspaceSnapshot(req.params.roomId)));
 
   // ── URL Content Fetcher (moved inside registerRoutes) ──────────────────────
   app.post("/api/fetch-url", async (req, res) => {

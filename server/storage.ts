@@ -5,7 +5,11 @@ import {
   type RoomState, type InsertRoomState,
   type RerTask, type InsertRerTask,
   type RerAgentOutput, type InsertRerAgentOutput,
+  type Mission, type InsertMission,
+  type Task, type InsertTask,
+  type MemoryEntry, type InsertMemoryEntry,
   users, rooms, members, chatMessages, roomStates, rerTasks, rerAgentOutputs,
+  missions, tasks, memoryEntries,
 } from "@shared/schema";
 import { randomUUID, createHash } from "crypto";
 import { db } from "./db";
@@ -52,6 +56,19 @@ export interface IStorage {
   createRerAgentOutput(output: InsertRerAgentOutput): Promise<RerAgentOutput>;
   updateRerAgentOutput(id: string, updates: Partial<RerAgentOutput>): Promise<RerAgentOutput | undefined>;
   getTaskAgentOutputs(taskId: string): Promise<RerAgentOutput[]>;
+  // SMCBOS: Missions & Tasks
+  createMission(input: InsertMission): Promise<Mission>;
+  getMission(id: string): Promise<Mission | undefined>;
+  updateMission(id: string, updates: Partial<Mission>): Promise<Mission | undefined>;
+  getRoomMissions(roomId: string): Promise<Mission[]>;
+  createTask(input: InsertTask): Promise<Task>;
+  getTask(id: string): Promise<Task | undefined>;
+  updateTask(id: string, updates: Partial<Task>): Promise<Task | undefined>;
+  getMissionTasks(missionId: string): Promise<Task[]>;
+  // SMCBOS: Shared Cognitive Memory
+  setMemory(input: InsertMemoryEntry): Promise<MemoryEntry>;
+  getMemory(roomId: string, scope: string, scopeId?: string, key?: string): Promise<MemoryEntry[]>;
+  deleteMemory(roomId: string, scope: string, scopeId?: string, key?: string): Promise<void>;
 }
 
 // ── Postgres-backed storage ───────────────────────────────────────────────────
@@ -270,6 +287,94 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(rerAgentOutputs)
       .where(eq(rerAgentOutputs.taskId, taskId))
       .orderBy(asc(rerAgentOutputs.tabIndex));
+  }
+
+  // ── SMCBOS: Missions & Tasks (orchestration foundation) ─────────────────────
+  async createMission(input: InsertMission): Promise<Mission> {
+    const [m] = await db.insert(missions).values({
+      roomId: input.roomId,
+      title: input.title,
+      objective: input.objective,
+      kind: input.kind ?? "custom",
+      status: input.status ?? "pending",
+      createdBy: input.createdBy ?? null,
+      metadata: (input.metadata ?? null) as any,
+    }).returning();
+    return m;
+  }
+
+  async getMission(id: string) {
+    const [m] = await db.select().from(missions).where(eq(missions.id, id));
+    return m;
+  }
+
+  async updateMission(id: string, updates: Partial<Mission>) {
+    const [u] = await db.update(missions).set(updates).where(eq(missions.id, id)).returning();
+    return u;
+  }
+
+  async getRoomMissions(roomId: string): Promise<Mission[]> {
+    return db.select().from(missions).where(eq(missions.roomId, roomId)).orderBy(desc(missions.createdAt));
+  }
+
+  async createTask(input: InsertTask): Promise<Task> {
+    const [t] = await db.insert(tasks).values({
+      missionId: input.missionId,
+      parentId: input.parentId ?? null,
+      title: input.title,
+      kind: input.kind ?? "generic",
+      status: input.status ?? "pending",
+      sequence: input.sequence ?? 0,
+      input: input.input ?? null,
+      output: input.output ?? null,
+      error: input.error ?? null,
+      metadata: (input.metadata ?? null) as any,
+    }).returning();
+    return t;
+  }
+
+  async getTask(id: string) {
+    const [t] = await db.select().from(tasks).where(eq(tasks.id, id));
+    return t;
+  }
+
+  async updateTask(id: string, updates: Partial<Task>) {
+    const [u] = await db.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
+    return u;
+  }
+
+  async getMissionTasks(missionId: string): Promise<Task[]> {
+    return db.select().from(tasks).where(eq(tasks.missionId, missionId)).orderBy(asc(tasks.sequence));
+  }
+
+  // ── SMCBOS: Shared Cognitive Memory ─────────────────────────────────────────
+  async setMemory(input: InsertMemoryEntry): Promise<MemoryEntry> {
+    const [m] = await db.insert(memoryEntries).values({
+      roomId: input.roomId,
+      scope: input.scope,
+      scopeId: input.scopeId ?? "",
+      key: input.key,
+      value: (input.value ?? null) as any,
+      updatedAt: new Date(),
+    }).onConflictDoUpdate({
+      target: [memoryEntries.roomId, memoryEntries.scope, memoryEntries.scopeId, memoryEntries.key],
+      set: { value: (input.value ?? null) as any, updatedAt: new Date() },
+    }).returning();
+    return m;
+  }
+
+  async getMemory(roomId: string, scope: string, scopeId?: string, key?: string): Promise<MemoryEntry[]> {
+    const conds = [eq(memoryEntries.roomId, roomId), eq(memoryEntries.scope, scope)];
+    if (scopeId !== undefined) conds.push(eq(memoryEntries.scopeId, scopeId));
+    if (key !== undefined) conds.push(eq(memoryEntries.key, key));
+    return db.select().from(memoryEntries).where(and(...conds)).orderBy(desc(memoryEntries.updatedAt));
+  }
+
+  async deleteMemory(roomId: string, scope: string, scopeId?: string, key?: string): Promise<void> {
+    const conds = [eq(memoryEntries.roomId, roomId), eq(memoryEntries.scope, scope)];
+    if (scopeId !== undefined) conds.push(eq(memoryEntries.scopeId, scopeId));
+    if (key !== undefined) conds.push(eq(memoryEntries.key, key));
+    await db.delete(memoryEntries).where(and(...conds));
   }
 
   // ── Rate limiting per user (daily, in-memory — resets each day) ──────────────
