@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean, integer, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, boolean, integer, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -32,7 +32,9 @@ export const members = pgTable("members", {
   role: varchar("role").notNull().default("member"),
   displayName: varchar("display_name").notNull(),
   lastSeen: timestamp("last_seen").defaultNow().notNull(),
-});
+}, (t) => ({
+  roomUidUnique: uniqueIndex("members_room_uid_unique").on(t.roomId, t.uid),
+}));
 
 export const chatMessages = pgTable("chat_messages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

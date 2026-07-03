@@ -873,12 +873,29 @@ function ConferenceRoomBrowserView() {
   const openExternal = (i: number) => window.open(tabs[i].url, "_blank");
   const onLoad  = (i: number) => {
     if (blockTimers.current[i]) { clearTimeout(blockTimers.current[i]!); blockTimers.current[i] = null; }
-    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: false, status: "Ready", blocked: false }));
+    setTabs(prev => prev.map((t, idx) => {
+      if (idx !== i) return t;
+      // A known iframe-blocking host that still fires onLoad is only rendering
+      // the browser's own "refused to connect" page — keep the blocked overlay
+      // instead of falsely marking it Ready.
+      if (hostBlocked(t.url)) return { ...t, loading: false, status: "Blocked", blocked: true };
+      return { ...t, loading: false, status: "Ready", blocked: false };
+    }));
   };
   const setLabel = (i: number, label: string) => setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, label }));
   const handleKey = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") navigate(i, tabs[i].inputUrl);
   };
+
+  // Publish live panel + command-log state so the COA overlay can "see" the
+  // Conference Room (fixes agents claiming no visibility into the room).
+  useEffect(() => {
+    setConferenceState({
+      panels: tabs.map(t => ({ label: t.label, url: t.url, status: t.status, blocked: t.blocked })),
+      log,
+      updatedAt: Date.now(),
+    });
+  }, [tabs, log]);
 
   const captureEvidence = (i: number) => {
     setEvidence(prev => [{

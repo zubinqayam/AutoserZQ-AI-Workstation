@@ -16,7 +16,7 @@ A 4-tab multi-agent research platform with the RER (Review → Enhance → Repor
 ## Architecture
 
 - **Frontend**: React + Vite + Tailwind + shadcn/ui + TanStack Query + wouter
-- **Backend**: Express + WebSocket (ws) + in-memory storage (MemStorage)
+- **Backend**: Express + WebSocket (ws) + Postgres persistence (Drizzle ORM) for rooms, members, chat, workspace state, and the RER pipeline (daily rate-limit counters are in-memory)
 - **AI**: Google Gemini 2.5 Flash via `@google/genai`
 - **Port**: 5000 (development and production)
 

@@ -55,9 +55,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (existing) {
               await storage.updateMember(existing.id, { lastSeen: new Date() });
             } else {
-              const members = await storage.getRoomMembers(roomId);
               await storage.createMember({ roomId, uid, role: room.ownerUid === uid ? "owner" : "member", displayName });
-              await storage.updateRoom(roomId, { memberCount: members.length + 1 });
+              // Derive count from the actual rows after insert to avoid drift.
+              const members = await storage.getRoomMembers(roomId);
+              await storage.updateRoom(roomId, { memberCount: members.length });
             }
             ws.roomId = roomId;
             ws.uid = uid;

@@ -5,11 +5,11 @@ import {
   type RoomState, type InsertRoomState,
   type RerTask, type InsertRerTask,
   type RerAgentOutput, type InsertRerAgentOutput,
-  users,
+  users, rooms, members, chatMessages, roomStates, rerTasks, rerAgentOutputs,
 } from "@shared/schema";
 import { randomUUID, createHash } from "crypto";
 import { db } from "./db";
-import { eq } from "drizzle-orm";
+import { eq, and, asc, desc } from "drizzle-orm";
 
 // ── User types — persisted in Postgres so accounts survive restarts/redeploys ─
 export interface AppUser {
@@ -54,15 +54,12 @@ export interface IStorage {
   getTaskAgentOutputs(taskId: string): Promise<RerAgentOutput[]>;
 }
 
-export class MemStorage implements IStorage {
-  private rooms = new Map<string, Room>();
-  private members = new Map<string, Member>();
-  private chatMessages = new Map<string, ChatMessage>();
-  private roomStates = new Map<string, RoomState>();
-  private rerTasks = new Map<string, RerTask>();
-  private rerAgentOutputs = new Map<string, RerAgentOutput>();
-
-  // ── User auth (persisted in Postgres) ─────────────────────────────────────────
+// ── Postgres-backed storage ───────────────────────────────────────────────────
+// Rooms, members, chat, workspace (room) state, and the RER pipeline are all
+// persisted so the workstation survives refresh, reconnect, and redeploy.
+// (Daily rate-limit counters remain in-memory — they reset every day anyway.)
+export class DatabaseStorage implements IStorage {
+  // ── User auth ───────────────────────────────────────────────────────────────
   async createUser(email: string, displayName: string, password: string) {
     const normEmail = email.toLowerCase().trim();
     const [existing] = await db.select().from(users).where(eq(users.email, normEmail));
@@ -113,130 +110,173 @@ export class MemStorage implements IStorage {
     return safe as Omit<AppUser, "passwordHash">;
   }
 
-  async getRoom(id: string) { return this.rooms.get(id); }
+  // ── Rooms ─────────────────────────────────────────────────────────────────
+  async getRoom(id: string) {
+    const [r] = await db.select().from(rooms).where(eq(rooms.id, id));
+    return r;
+  }
 
   async createRoom(room: InsertRoom): Promise<Room> {
-    const r: Room = { ...room, isOpen: room.isOpen ?? true, memberCount: room.memberCount ?? 0, createdAt: new Date() };
-    this.rooms.set(r.id, r);
+    const [r] = await db.insert(rooms).values({
+      id: room.id,
+      ownerUid: room.ownerUid,
+      isOpen: room.isOpen ?? true,
+      memberCount: room.memberCount ?? 0,
+    }).returning();
     return r;
   }
 
   async updateRoom(id: string, updates: Partial<Room>) {
-    const r = this.rooms.get(id);
-    if (!r) return undefined;
-    const u = { ...r, ...updates };
-    this.rooms.set(id, u);
+    const [u] = await db.update(rooms).set(updates).where(eq(rooms.id, id)).returning();
     return u;
   }
 
+  // ── Members ───────────────────────────────────────────────────────────────
   async getMember(roomId: string, uid: string) {
-    return Array.from(this.members.values()).find(m => m.roomId === roomId && m.uid === uid);
+    const [m] = await db.select().from(members).where(and(eq(members.roomId, roomId), eq(members.uid, uid)));
+    return m;
   }
 
   async getRoomMembers(roomId: string) {
-    return Array.from(this.members.values()).filter(m => m.roomId === roomId);
+    return db.select().from(members).where(eq(members.roomId, roomId));
   }
 
   async createMember(member: InsertMember): Promise<Member> {
-    const id = randomUUID();
-    const m: Member = { id, ...member, role: member.role ?? "member", lastSeen: new Date() };
-    this.members.set(id, m);
+    // Upsert on (roomId, uid) so a concurrent double-join can't create
+    // duplicate member rows — it just refreshes the existing membership.
+    const [m] = await db.insert(members).values({
+      roomId: member.roomId,
+      uid: member.uid,
+      role: member.role ?? "member",
+      displayName: member.displayName,
+    }).onConflictDoUpdate({
+      target: [members.roomId, members.uid],
+      set: { displayName: member.displayName, lastSeen: new Date() },
+    }).returning();
     return m;
   }
 
   async updateMember(id: string, updates: Partial<Member>) {
-    const m = this.members.get(id);
-    if (!m) return undefined;
-    const u = { ...m, ...updates };
-    this.members.set(id, u);
+    const [u] = await db.update(members).set(updates).where(eq(members.id, id)).returning();
     return u;
   }
 
-  async removeMember(id: string) { this.members.delete(id); }
+  async removeMember(id: string) {
+    await db.delete(members).where(eq(members.id, id));
+  }
 
+  // ── Chat messages ─────────────────────────────────────────────────────────
   async getChatMessages(roomId: string, limit = 500): Promise<ChatMessage[]> {
-    return Array.from(this.chatMessages.values())
-      .filter(m => m.roomId === roomId)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .slice(-limit);
+    // Fetch the newest `limit` rows, then return them in chronological order.
+    const rows = await db.select().from(chatMessages)
+      .where(eq(chatMessages.roomId, roomId))
+      .orderBy(desc(chatMessages.createdAt))
+      .limit(limit);
+    return rows.reverse();
   }
 
   async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
-    const id = randomUUID();
-    const m: ChatMessage = { id, ...message, isAI: message.isAI ?? false, createdAt: new Date() };
-    this.chatMessages.set(id, m);
+    const [m] = await db.insert(chatMessages).values({
+      roomId: message.roomId,
+      authorUid: message.authorUid,
+      text: message.text,
+      isAI: message.isAI ?? false,
+    }).returning();
     return m;
   }
 
+  // ── Workspace (room) state ─────────────────────────────────────────────────
   async getRoomState(roomId: string) {
-    return Array.from(this.roomStates.values()).find(s => s.roomId === roomId);
-  }
-
-  async createOrUpdateRoomState(state: InsertRoomState): Promise<RoomState> {
-    const existing = await this.getRoomState(state.roomId);
-    const id = existing?.id ?? randomUUID();
-    const s: RoomState = {
-      id, roomId: state.roomId,
-      urls: state.urls as string[], inputs: state.inputs as string[],
-      collapsed: state.collapsed as boolean[], forceEmbed: state.forceEmbed as boolean[],
-      allowList: state.allowList as string[], updatedBy: state.updatedBy ?? null, updatedAt: new Date(),
-    };
-    this.roomStates.set(id, s);
+    const [s] = await db.select().from(roomStates).where(eq(roomStates.roomId, roomId));
     return s;
   }
 
-  async createRerTask(task: InsertRerTask): Promise<RerTask> {
-    const t: RerTask = {
-      ...task, mode: task.mode ?? "sequential", status: task.status ?? "pending",
-      currentStep: task.currentStep ?? 0, totalSteps: task.totalSteps ?? 4,
-      createdAt: new Date(), completedAt: null,
+  async createOrUpdateRoomState(state: InsertRoomState): Promise<RoomState> {
+    const values = {
+      roomId: state.roomId,
+      urls: state.urls as string[],
+      inputs: state.inputs as string[],
+      collapsed: state.collapsed as boolean[],
+      forceEmbed: state.forceEmbed as boolean[],
+      allowList: state.allowList as string[],
+      updatedBy: state.updatedBy ?? null,
+      updatedAt: new Date(),
     };
-    this.rerTasks.set(t.id, t);
+    const [s] = await db.insert(roomStates).values(values)
+      .onConflictDoUpdate({
+        target: roomStates.roomId,
+        set: {
+          urls: values.urls,
+          inputs: values.inputs,
+          collapsed: values.collapsed,
+          forceEmbed: values.forceEmbed,
+          allowList: values.allowList,
+          updatedBy: values.updatedBy,
+          updatedAt: values.updatedAt,
+        },
+      })
+      .returning();
+    return s;
+  }
+
+  // ── RER pipeline ────────────────────────────────────────────────────────────
+  async createRerTask(task: InsertRerTask): Promise<RerTask> {
+    const [t] = await db.insert(rerTasks).values({
+      id: task.id,
+      roomId: task.roomId,
+      topic: task.topic,
+      mode: task.mode ?? "sequential",
+      status: task.status ?? "pending",
+      currentStep: task.currentStep ?? 0,
+      totalSteps: task.totalSteps ?? 4,
+    }).returning();
     return t;
   }
 
-  async getRerTask(id: string) { return this.rerTasks.get(id); }
+  async getRerTask(id: string) {
+    const [t] = await db.select().from(rerTasks).where(eq(rerTasks.id, id));
+    return t;
+  }
 
   async updateRerTask(id: string, updates: Partial<RerTask>) {
-    const t = this.rerTasks.get(id);
-    if (!t) return undefined;
-    const u = { ...t, ...updates };
-    this.rerTasks.set(id, u);
+    const [u] = await db.update(rerTasks).set(updates).where(eq(rerTasks.id, id)).returning();
     return u;
   }
 
   async getRoomRerTasks(roomId: string): Promise<RerTask[]> {
-    return Array.from(this.rerTasks.values())
-      .filter(t => t.roomId === roomId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return db.select().from(rerTasks)
+      .where(eq(rerTasks.roomId, roomId))
+      .orderBy(desc(rerTasks.createdAt));
   }
 
   async createRerAgentOutput(output: InsertRerAgentOutput): Promise<RerAgentOutput> {
-    const id = randomUUID();
-    const o: RerAgentOutput = { id, ...output, status: output.status ?? "idle", output: output.output ?? null, receivedInput: output.receivedInput ?? null, createdAt: new Date() };
-    this.rerAgentOutputs.set(id, o);
+    const [o] = await db.insert(rerAgentOutputs).values({
+      taskId: output.taskId,
+      tabIndex: output.tabIndex,
+      role: output.role,
+      status: output.status ?? "idle",
+      output: output.output ?? null,
+      receivedInput: output.receivedInput ?? null,
+    }).returning();
     return o;
   }
 
   async updateRerAgentOutput(id: string, updates: Partial<RerAgentOutput>) {
-    const o = this.rerAgentOutputs.get(id);
-    if (!o) return undefined;
-    const u = { ...o, ...updates };
-    this.rerAgentOutputs.set(id, u);
+    const [u] = await db.update(rerAgentOutputs).set(updates).where(eq(rerAgentOutputs.id, id)).returning();
     return u;
   }
 
   async getTaskAgentOutputs(taskId: string): Promise<RerAgentOutput[]> {
-    return Array.from(this.rerAgentOutputs.values())
-      .filter(o => o.taskId === taskId)
-      .sort((a, b) => a.tabIndex - b.tabIndex);
+    return db.select().from(rerAgentOutputs)
+      .where(eq(rerAgentOutputs.taskId, taskId))
+      .orderBy(asc(rerAgentOutputs.tabIndex));
   }
 
-  // ── Rate limiting per user (daily) ──────────────────────────────────────────
+  // ── Rate limiting per user (daily, in-memory — resets each day) ──────────────
   private usageCounters = new Map<string, { date: string; geminiCalls: number; rerLaunches: number; coaCalls: number; resetAt: string }>();
 
   async getUsage(uid: string) {
-    const today = new Date().toISOString().slice(0,10);
+    const today = new Date().toISOString().slice(0, 10);
     const key = `${uid}:${today}`;
     let u = this.usageCounters.get(key);
     if (!u || u.resetAt !== today) {
@@ -247,7 +287,7 @@ export class MemStorage implements IStorage {
   }
 
   async incrementUsage(uid: string, field: "geminiCalls" | "rerLaunches" | "coaCalls") {
-    const today = new Date().toISOString().slice(0,10);
+    const today = new Date().toISOString().slice(0, 10);
     const key = `${uid}:${today}`;
     const u = await this.getUsage(uid);
     u[field] += 1;
@@ -255,11 +295,11 @@ export class MemStorage implements IStorage {
     return u;
   }
 
-  // ── Commercial tier (future) ───────────────────────────────────────────────
+  // ── Commercial tier ─────────────────────────────────────────────────────────
   async getTier(uid: string): Promise<"free" | "pro" | "enterprise"> {
     const [user] = await db.select().from(users).where(eq(users.id, uid));
     return (user?.tier as any) || "free";
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();

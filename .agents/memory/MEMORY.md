@@ -1,0 +1,1 @@
+- [iframe block detection](iframe-block-detection.md) — iframe-blocked sites still fire onLoad with an error page; use a static known-blocked host list, not load events.
