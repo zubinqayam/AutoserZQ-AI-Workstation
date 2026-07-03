@@ -1,0 +1,858 @@
+I would send the following to Replit as a single Architecture Upgrade Specification, rather than as a bug report. It explains why the current implementation is failing, what the target architecture is, and provides a phased implementation roadmap that allows the existing workspace to evolve without starting from scratch.
+
+
+---
+
+ZQ AI Workstation xv2.0
+
+Architecture Upgrade Specification
+
+Sovereign Multi-Agent Cognitive Browser Operating System (SMCBOS)
+
+Document Version: 4.0
+Status: Architecture Upgrade Specification
+Purpose: Platform Evolution (Not Bug Fixes)
+
+
+---
+
+Executive Summary
+
+The current implementation successfully demonstrates the concept of an AI-assisted multi-browser research environment. However, after reviewing the existing implementation, the Replit workspace, the current UI, observed runtime failures, browser limitations, and the architectural evolution discussions, it is clear that the remaining issues are not isolated software defects.
+
+They are architectural limitations.
+
+Examples include:
+
+iframe rendering failures caused by X-Frame-Options and CSP restrictions
+
+browser sessions losing state
+
+lack of shared context between AI agents
+
+browser recovery limitations
+
+inability for the AI to understand the complete workspace
+
+missing orchestration between browsers
+
+missing persistent workspace state
+
+inconsistent browser lifecycle management
+
+
+These issues cannot be permanently solved through incremental bug fixes.
+
+Instead, the platform should evolve into a Mission-Driven AI Operating System built around persistent browser orchestration, shared cognitive memory, and event-driven execution.
+
+This document defines that upgrade path.
+
+
+---
+
+Vision
+
+Transform the current application from
+
+> Multi Browser Command Center
+
+
+
+into
+
+> ZQ AI Workstation v4.0
+
+
+
+Sovereign Multi-Agent Cognitive Browser Operating System (SMCBOS)
+
+The platform should become an operating system for AI research rather than a browser-based web application.
+
+
+---
+
+Current Architecture
+
+User
+
+↓
+
+Chat
+
+↓
+
+Browser
+
+↓
+
+Answer
+
+This architecture causes
+
+stateless execution
+
+duplicated reasoning
+
+browser disconnects
+
+iframe failures
+
+isolated agents
+
+
+
+---
+
+Target Architecture
+
+User
+      │
+      ▼
+SMCBOS Kernel
+      │
+      ├──────── Mission Engine
+      ├──────── Workspace Engine
+      ├──────── Intent Engine
+      ├──────── Planner
+      ├──────── Scheduler
+      ├──────── Capability Registry
+      ├──────── Unified Event Mesh
+      ├──────── Governance Engine
+      ├──────── Health Manager
+      └──────── Recovery Manager
+                │
+                ▼
+        Execution Cluster
+                │
+     ┌──────────┼──────────┐
+     ▼          ▼          ▼
+ Browser     Python     API/MCP
+    Pods      Workers   Connectors
+                │
+                ▼
+       Evidence Engine
+                │
+                ▼
+      Knowledge Engine
+                │
+                ▼
+        Control Tower UI
+
+
+---
+
+Architectural Objectives
+
+The upgrade introduces ten core capabilities:
+
+1. Mission-driven execution instead of chat-driven execution.
+
+
+2. Persistent Workspace State.
+
+
+3. Shared Cognitive Memory.
+
+
+4. Real browser orchestration using Playwright/CDP.
+
+
+5. Browser Compatibility Layer.
+
+
+6. Unified Event Mesh.
+
+
+7. Browser Recovery Engine.
+
+
+8. Evidence & Knowledge Engine.
+
+
+9. Enterprise Governance.
+
+
+10. Control Tower UI.
+
+
+
+
+---
+
+1. Mission Engine
+
+Replace conversational execution with structured missions.
+
+Every user request becomes a Mission Object.
+
+Example:
+
+{
+  "missionId":"mission-001",
+  "objective":"Research Sohar Port logistics ecosystem",
+  "priority":"HIGH",
+  "requiredAgents":[
+    "Planner",
+    "Researcher",
+    "Reviewer"
+  ],
+  "requiredBrowsers":[
+    "Browser1",
+    "Browser2",
+    "Browser3"
+  ],
+  "expectedOutput":"Strategic Intelligence Report",
+  "status":"Running"
+}
+
+Mission Pipeline
+
+User
+
+↓
+
+Mission Parser
+
+↓
+
+Intent Engine
+
+↓
+
+Execution Planner
+
+↓
+
+Mission DAG
+
+↓
+
+Scheduler
+
+↓
+
+Execution Cluster
+
+↓
+
+Evidence
+
+↓
+
+Knowledge
+
+↓
+
+Review
+
+↓
+
+Report
+
+
+---
+
+2. Workspace Engine
+
+The Workspace becomes the operating system's shared memory.
+
+Persist
+
+room layout
+
+browsers
+
+missions
+
+downloads
+
+uploads
+
+history
+
+errors
+
+evidence
+
+user preferences
+
+agent state
+
+
+Refreshing the page should restore the complete workstation.
+
+
+---
+
+3. Shared Cognitive Memory
+
+All agents should read and write to the same memory.
+
+Memory layers
+
+Mission Memory
+
+Workspace Memory
+
+Browser Memory
+
+Evidence Memory
+
+Knowledge Graph
+
+Long-Term Memory
+
+
+Agents should never maintain isolated state.
+
+
+---
+
+4. Browser Cluster Manager
+
+Replace iframe-based browsing with managed browser pods.
+
+Each browser becomes a managed resource containing:
+
+browser instance
+
+browser state
+
+viewport
+
+cookies
+
+downloads
+
+uploads
+
+extensions
+
+task queue
+
+console
+
+network
+
+memory
+
+evidence
+
+health
+
+
+
+---
+
+5. Browser Compatibility Layer
+
+Before loading any URL
+
+URL
+
+↓
+
+Compatibility Scanner
+
+↓
+
+iframe allowed?
+
+↓
+
+Yes
+
+↓
+
+Embed
+
+↓
+
+No
+
+↓
+
+Playwright
+
+↓
+
+CDP Streaming
+
+↓
+
+Canvas
+
+This removes blank browser windows caused by X-Frame-Options and CSP restrictions.
+
+
+---
+
+6. Real Browser Streaming
+
+Rendering pipeline
+
+Playwright
+
+↓
+
+Chrome DevTools Protocol
+
+↓
+
+JPEG/WebRTC Frames
+
+↓
+
+WebSocket
+
+↓
+
+Worker Thread
+
+↓
+
+OffscreenCanvas
+
+↓
+
+Control Tower
+
+This replaces iframe rendering for protected websites.
+
+
+---
+
+7. Browser Health Model
+
+Replace the current single Ready state.
+
+Supported states:
+
+Initializing
+
+Launching
+
+Connecting
+
+Loading
+
+Authenticating
+
+Executing
+
+Waiting
+
+Idle
+
+Blocked
+
+Recovering
+
+Disconnected
+
+Completed
+
+Failed
+
+
+These states should drive both UI indicators and scheduler decisions.
+
+
+---
+
+8. Browser Recovery Engine
+
+If a browser crashes
+
+Browser Crash
+
+↓
+
+Restart Browser
+
+↓
+
+Restore Session
+
+↓
+
+Restore Cookies
+
+↓
+
+Restore Downloads
+
+↓
+
+Resume Mission
+
+The mission should continue automatically whenever possible.
+
+
+---
+
+9. Browser API
+
+Agents must never manipulate the DOM directly.
+
+Expose a standardized Browser API:
+
+Navigate
+
+Search
+
+Click
+
+Fill
+
+Upload
+
+Download
+
+Screenshot
+
+PDF
+
+DOM
+
+Console
+
+Network
+
+Storage
+
+Cookies
+
+Performance
+
+Accessibility
+
+DevTools
+
+Extract
+
+
+This creates a stable abstraction layer.
+
+
+---
+
+10. Unified Event Mesh
+
+Adopt an event-driven architecture.
+
+Core events include:
+
+MissionCreated
+
+MissionUpdated
+
+TaskStarted
+
+TaskCompleted
+
+BrowserStarted
+
+BrowserRecovered
+
+BrowserHealthChanged
+
+NavigationStarted
+
+NavigationCompleted
+
+EvidenceCaptured
+
+KnowledgeUpdated
+
+ReportGenerated
+
+WorkspaceSaved
+
+MissionCompleted
+
+
+Modules subscribe to events instead of directly invoking each other.
+
+
+---
+
+11. Evidence Engine
+
+Every significant action should automatically generate evidence:
+
+Screenshot
+
+MHTML
+
+DOM snapshot
+
+HAR network trace
+
+Console log
+
+Metadata
+
+SHA-256 hash
+
+RFC 3161 timestamp (optional enterprise mode)
+
+Digital signature
+
+
+Evidence becomes first-class data linked to missions and reports.
+
+
+---
+
+12. Knowledge Engine
+
+Evidence feeds a persistent Knowledge Graph:
+
+Mission
+      ↓
+Evidence
+      ↓
+Entity Extraction
+      ↓
+Knowledge Graph
+      ↓
+Long-Term Memory
+      ↓
+Future Missions
+
+Future missions should benefit from previous work.
+
+
+---
+
+13. Agent Hierarchy
+
+Recommended orchestration:
+
+Mission Manager
+
+↓
+
+Planner
+
+↓
+
+Thinker
+
+↓
+
+Researcher
+
+↓
+
+Keyhole
+
+↓
+
+Mr.Q
+
+↓
+
+Reviewer
+
+↓
+
+Enhancer
+
+↓
+
+Reporter
+
+Each agent exposes:
+
+role
+
+input
+
+output
+
+confidence
+
+evidence
+
+status
+
+
+
+---
+
+14. Control Tower
+
+The current Conference Room should evolve into a Control Tower.
+
+Components:
+
+Mission Queue
+
+Live Browser Matrix
+
+Running Agents
+
+Workspace State
+
+Knowledge Graph
+
+Evidence Timeline
+
+Notifications
+
+Cluster Health
+
+System Metrics
+
+Scheduler Status
+
+
+Browsers become one part of a broader operational dashboard.
+
+
+---
+
+15. Enterprise Infrastructure
+
+Target infrastructure:
+
+React + TypeScript Frontend
+
+Node.js Backend
+
+Playwright Browser Cluster
+
+Redis Event Bus
+
+PostgreSQL
+
+Vector Database
+
+Object Storage
+
+WebSocket Gateway
+
+Proxy Manager
+
+Health Monitor
+
+Process Supervisor
+
+Auto Recovery
+
+Multi-Master Browser Pool
+
+Multi-Tenant Isolation
+
+
+
+---
+
+Phased Implementation Roadmap
+
+Phase 1 — Mission Foundation
+
+Mission Engine
+
+Workspace State Engine
+
+Event Mesh
+
+Browser Cluster Manager
+
+Persistent mission storage
+
+
+Outcome: Mission-driven execution replaces chat-centric flow.
+
+
+---
+
+Phase 2 — Browser Orchestration
+
+Playwright browser pool
+
+Compatibility Scanner
+
+CDP streaming
+
+Browser API
+
+Browser Health Model
+
+Recovery Engine
+
+
+Outcome: Reliable live browser orchestration with recovery and streaming.
+
+
+---
+
+Phase 3 — Intelligence Layer
+
+Shared Cognitive Memory
+
+Knowledge Graph
+
+Evidence Engine
+
+Agent Hierarchy
+
+Review & Reporting Pipeline
+
+
+Outcome: Coordinated multi-agent reasoning with reusable knowledge.
+
+
+---
+
+Phase 4 — Enterprise Platform
+
+Governance Engine
+
+Distributed Browser Cluster
+
+Multi-Tenant Support
+
+Advanced Monitoring
+
+Performance Optimization
+
+Security Hardening
+
+Operational Analytics
+
+
+Outcome: Production-ready enterprise AI research platform.
+
+
+---
+
+Mapping Current Issues to Architecture
+
+Current Issue	Root Cause	Proposed Solution
+
+Blank browser panels	iframe restrictions	Browser Compatibility Layer + CDP Streaming
+Browser state lost	No persistence	Workspace Engine
+AI lacks workspace awareness	Stateless prompts	Context Injection + Shared Cognitive Memory
+Browser crashes	No recovery	Browser Recovery Engine
+Browser status unclear	Simplified lifecycle	Browser Health State Machine
+Agents operate independently	No shared state	Shared Cognitive Memory
+Inconsistent browser actions	Direct DOM logic	Standardized Browser API
+Components tightly coupled	Direct service calls	Unified Event Mesh
+Evidence fragmented	Manual capture	Evidence Engine
+Reports don't build on prior work	No long-term memory	Knowledge Engine
+
+
+
+---
+
+Conclusion
+
+The current Replit implementation has successfully validated the user experience and core interaction model. The next stage should not focus on isolated bug fixes, but on evolving the platform into SMCBOS xv2.0 through a phased architectural upgrade.
+
+By introducing mission-driven execution, persistent workspace state, shared cognitive memory, managed browser orchestration, event-driven communication, browser recovery, evidence capture, and a long-term knowledge engine, the platform will transition from a browser-based prototype into a scalable, enterprise-grade AI research operating system.
+
+This specification is intended as the blueprint for that evolution while preserving the existing investment in the current Replit codebase and providing a clear, incremental path to implementation.

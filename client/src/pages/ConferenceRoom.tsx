@@ -17,6 +17,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import type { RerTask, RerAgentOutput } from "@shared/schema";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { setConferenceState } from "@/lib/coaLiveState";
 
 const TAB_LABELS  = ["Researcher", "Reviewer", "Enhancer", "Reporter"];
 const TAB_COLORS  = ["text-indigo-500", "text-orange-500", "text-emerald-500", "text-purple-500"];
@@ -213,7 +214,7 @@ export default function ConferenceRoom() {
         onStartRer={handleStartRer}
       />
 
-      <COAOverlay rerTasks={rerTasks} />
+      <COAOverlay rerTasks={rerTasks} messages={messages} currentUid={uid} />
     </div>
   );
 }
@@ -717,20 +718,42 @@ function GitHubView() {
 
 // ── ZQ Conference Room Browser View v3.0 ──────────────────────────────────────
 const SEARCH_ENGINES: Record<string, string> = {
-  duckduckgo: "https://duckduckgo.com/?q=",
+  // lite.duckduckgo.com is the embeddable (no-JS) endpoint — the main
+  // duckduckgo.com page blocks iframes via X-Frame-Options.
+  duckduckgo: "https://lite.duckduckgo.com/lite/?q=",
   bing:       "https://www.bing.com/search?q=",
-  startpage:  "https://www.startpage.com/search?q=",
+  startpage:  "https://www.startpage.com/sp/search?query=",
   brave:      "https://search.brave.com/search?q=",
   perplexity: "https://www.perplexity.ai/search?q=",
   wikipedia:  "https://en.wikipedia.org/wiki/Special:Search?search=",
 };
 
 const TAB_DEFAULTS = [
-  { label: "Browser 1", url: "https://duckduckgo.com",                       color: "#6366f1" },
+  { label: "Browser 1", url: "https://lite.duckduckgo.com/lite/",            color: "#6366f1" },
   { label: "Browser 2", url: "https://en.wikipedia.org/wiki/Main_Page",      color: "#f97316" },
-  { label: "Browser 3", url: "https://www.startpage.com",                    color: "#10b981" },
-  { label: "Browser 4", url: "https://arxiv.org",                            color: "#a855f7" },
+  { label: "Browser 3", url: "https://arxiv.org",                            color: "#10b981" },
+  { label: "Browser 4", url: "https://archive.org",                          color: "#a855f7" },
 ];
+
+// Hosts known to hard-block iframe embedding (X-Frame-Options / CSP).
+// We flag these immediately instead of waiting for a load event that never
+// resolves — the browser silently renders its own "refused to connect" page.
+const BLOCKED_HOST_PATTERNS = [
+  "google.", "youtube.com", "youtu.be", "twitter.com", "x.com",
+  "facebook.com", "instagram.com", "reddit.com", "linkedin.com",
+  "github.com", "gitlab.com", "bing.com", "amazon.com", "netflix.com",
+];
+
+function hostBlocked(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    // Main DuckDuckGo page blocks framing; lite/html subdomains do not.
+    if (h === "duckduckgo.com" || h === "www.duckduckgo.com") return true;
+    return BLOCKED_HOST_PATTERNS.some(p => h === p || h.includes(p));
+  } catch {
+    return false;
+  }
+}
 
 type ViewMode = "grid" | "focus" | "fullscreen";
 
@@ -801,41 +824,49 @@ function ConferenceRoomBrowserView() {
     useRef<HTMLIFrameElement>(null),
   ];
 
+  const clearTimer = (i: number) => {
+    if (blockTimers.current[i]) { clearTimeout(blockTimers.current[i]!); blockTimers.current[i] = null; }
+  };
+
   const navigate = useCallback((tabIdx: number, rawUrl: string, fromCmd = false) => {
     const url = toUrl(rawUrl, engine);
     if (!url) return;
+    const willBlock = hostBlocked(url);
     setTabs(prev => prev.map((t, i) => {
       if (i !== tabIdx) return t;
       const hist = t.history.slice(0, t.histIdx + 1);
-      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true, status: "Loading...", blocked: false };
+      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: !willBlock, status: willBlock ? "Blocked" : "Loading...", blocked: willBlock };
     }));
-    armBlockTimer(tabIdx);
-    if (fromCmd) setLog(l => [`[${new Date().toLocaleTimeString()}] Browser ${tabIdx + 1} → ${url}`, ...l].slice(0, 80));
+    if (willBlock) clearTimer(tabIdx); else armBlockTimer(tabIdx);
+    if (fromCmd) setLog(l => [`[${new Date().toLocaleTimeString()}] Browser ${tabIdx + 1} → ${url}${willBlock ? " (blocked — X-Frame)" : ""}`, ...l].slice(0, 80));
   }, [engine, armBlockTimer]);
 
   const navigateAll = useCallback((rawUrl: string) => {
     const url = toUrl(rawUrl, engine);
     if (!url) return;
+    const willBlock = hostBlocked(url);
     setTabs(prev => prev.map(t => {
       const hist = t.history.slice(0, t.histIdx + 1);
-      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: true, status: "Loading...", blocked: false };
+      return { ...t, url, inputUrl: url, history: [...hist, url], histIdx: hist.length, loading: !willBlock, status: willBlock ? "Blocked" : "Loading...", blocked: willBlock };
     }));
-    [0, 1, 2, 3].forEach(armBlockTimer);
-    setLog(l => [`[${new Date().toLocaleTimeString()}] ALL BROWSERS → ${url}`, ...l].slice(0, 80));
+    [0, 1, 2, 3].forEach(i => willBlock ? clearTimer(i) : armBlockTimer(i));
+    setLog(l => [`[${new Date().toLocaleTimeString()}] ALL BROWSERS → ${url}${willBlock ? " (blocked — X-Frame)" : ""}`, ...l].slice(0, 80));
   }, [engine, armBlockTimer]);
 
   const goBack  = (i: number) => { setTabs(prev => prev.map((t, idx) => {
     if (idx !== i || t.histIdx <= 0) return t;
-    const ni = t.histIdx - 1;
-    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true, status: "Navigating...", blocked: false };
+    const ni = t.histIdx - 1; const nurl = t.history[ni]; const b = hostBlocked(nurl);
+    return { ...t, histIdx: ni, url: nurl, inputUrl: nurl, loading: !b, status: b ? "Blocked" : "Navigating...", blocked: b };
   })); armBlockTimer(i); };
   const goFwd   = (i: number) => { setTabs(prev => prev.map((t, idx) => {
     if (idx !== i || t.histIdx >= t.history.length - 1) return t;
-    const ni = t.histIdx + 1;
-    return { ...t, histIdx: ni, url: t.history[ni], inputUrl: t.history[ni], loading: true, status: "Navigating...", blocked: false };
+    const ni = t.histIdx + 1; const nurl = t.history[ni]; const b = hostBlocked(nurl);
+    return { ...t, histIdx: ni, url: nurl, inputUrl: nurl, loading: !b, status: b ? "Blocked" : "Navigating...", blocked: b };
   })); armBlockTimer(i); };
   const refresh = (i: number) => {
-    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: true, status: "Refreshing...", blocked: false }));
+    const b = hostBlocked(tabs[i].url);
+    setTabs(prev => prev.map((t, idx) => idx !== i ? t : { ...t, loading: !b, status: b ? "Blocked" : "Refreshing...", blocked: b }));
+    if (b) { clearTimer(i); return; }
     armBlockTimer(i);
     if (iframeRefs[i].current) { try { iframeRefs[i].current!.src = tabs[i].url; } catch {} }
   };

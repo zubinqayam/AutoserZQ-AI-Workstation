@@ -10,7 +10,8 @@ import {
   Shield, Map, Zap, CheckCircle, Layers, Sword, Activity,
   Users, Key, Save, Trash2, CheckCircle2, AlertCircle,
 } from "lucide-react";
-import type { RerTask, RerAgentOutput } from "@shared/schema";
+import type { RerTask, RerAgentOutput, ChatMessage } from "@shared/schema";
+import { getConferenceState } from "@/lib/coaLiveState";
 
 // ── Agent roster ──────────────────────────────────────────────────────────────
 export const AGENTS = [
@@ -45,6 +46,8 @@ interface COAMsg {
 
 interface COAOverlayProps {
   rerTasks: (RerTask & { agentOutputs?: RerAgentOutput[] })[];
+  messages?: ChatMessage[];
+  currentUid?: string;
 }
 
 const TAB_LABELS = ["Researcher", "Reviewer", "Enhancer", "Reporter"];
@@ -58,7 +61,7 @@ const QUICK = [
   { label: "Verify",            msg: "@checker Check for errors or weak claims" },
 ];
 
-export default function COAOverlay({ rerTasks }: COAOverlayProps) {
+export default function COAOverlay({ rerTasks, messages = [], currentUid = "" }: COAOverlayProps) {
   const [open, setOpen]           = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [expanded, setExpanded]   = useState(false);
@@ -141,15 +144,44 @@ export default function COAOverlay({ rerTasks }: COAOverlayProps) {
   const buildContext = useCallback((): string => {
     const page = typeof window !== "undefined" ? window.location.pathname : "unknown";
     const user = (() => { try { return JSON.parse(localStorage.getItem("zq_user") || "null"); } catch { return null; } })();
-    const base = [
+    const lines: string[] = [
       `Current page: ${page}`,
       `Logged in as: ${user ? `${user.displayName || user.email} (${user.isGuest ? "guest" : user.provider || "email"})` : "not logged in"}`,
     ];
-    if (!activeTask) return [...base, "Pipeline: idle — no active RER task running."].join("\n");
+
+    // ── Live Conference Room state (4 iframe panels) ──────────────────────────
+    const conf = getConferenceState();
+    if (conf && conf.panels.length) {
+      lines.push("ZQ Conference Room — live panel state:");
+      conf.panels.forEach((p, i) => {
+        lines.push(`  Panel ${i + 1} (${p.label}): ${p.status}${p.blocked ? " [BLOCKED — site refuses iframe embedding]" : ""} → ${p.url}`);
+      });
+      if (conf.log.length) {
+        lines.push("  Recent Conference Room commands:");
+        conf.log.slice(0, 5).forEach(l => lines.push(`    ${l}`));
+      }
+    } else {
+      lines.push("ZQ Conference Room: not currently open / no panel activity yet.");
+    }
+
+    // ── Recent Command Center (supervisor) chat ───────────────────────────────
+    if (messages && messages.length) {
+      lines.push("Command Center — recent chat (newest last):");
+      messages.slice(-6).forEach(m => {
+        const who = m.isAI ? "Supervisor AI" : (m.authorUid === currentUid ? "User" : m.authorUid);
+        const txt = (m.text || "").slice(0, 180).replace(/\n/g, " ");
+        lines.push(`  ${who}: ${txt}`);
+      });
+    }
+
+    // ── RER pipeline state ────────────────────────────────────────────────────
+    if (!activeTask) {
+      lines.push("RER pipeline: idle — no active task running.");
+      return lines.join("\n");
+    }
     const outputs = activeTask.agentOutputs ?? [];
-    return [
-      ...base,
-      `Research topic: "${activeTask.topic}"`,
+    lines.push(
+      `RER research topic: "${activeTask.topic}"`,
       `Pipeline mode: ${activeTask.mode}, status: ${activeTask.status}, step: ${activeTask.currentStep}/4`,
       ...TAB_LABELS.map((lbl, i) => {
         const o = outputs[i];
@@ -158,8 +190,9 @@ export default function COAOverlay({ rerTasks }: COAOverlayProps) {
         const snip = (o.output ?? "").slice(0,200).replace(/\n/g," ");
         return `  Tab ${i+1} (${lbl}): ${o.status}${wc>0?`, ${wc} words`:""}${snip?` — "${snip}…"`:""}`;
       }),
-    ].join("\n");
-  }, [activeTask]);
+    );
+    return lines.join("\n");
+  }, [activeTask, messages, currentUid]);
 
   // ── Proactive auto-messages ───────────────────────────────────────────────
   useEffect(() => {
