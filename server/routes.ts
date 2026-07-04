@@ -30,6 +30,19 @@ export function sanitizeRerText(raw: string): string {
     .slice(0, 500);
 }
 
+// Sanitize an array of chat-style messages ({ role, content }) using the
+// same rules as sanitizeRerText, dropping any entries that end up empty or
+// malformed. Used for Command Center and COA chat input before it reaches
+// Gemini.
+export function sanitizeChatMessages<T extends { role?: unknown; content?: unknown }>(
+  messages: T[]
+): T[] {
+  return messages
+    .filter((m) => m && typeof m.content === "string")
+    .map((m) => ({ ...m, content: sanitizeRerText(m.content as string) }))
+    .filter((m) => (m.content as string).length > 0) as T[];
+}
+
 export const rerStartSchema = z.object({
   roomId: z.string().min(1, "roomId required"),
   topic: z
@@ -270,7 +283,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { messages } = req.body;
       if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
-      res.json({ text: await generateResearchResponse(messages) });
+      const sanitized = sanitizeChatMessages(messages);
+      if (sanitized.length === 0) return res.status(400).json({ error: "messages must not be empty after sanitization" });
+      res.json({ text: await generateResearchResponse(sanitized) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "AI unavailable" });
     }
@@ -462,8 +477,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { messages, workspaceContext, roomId } = req.body;
       if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
+      const sanitized = sanitizeChatMessages(messages);
+      if (sanitized.length === 0) return res.status(400).json({ error: "messages must not be empty after sanitization" });
       const context = await mergeAgentContext(roomId, workspaceContext);
-      res.json({ text: await generateCOAResponse(messages, context) });
+      res.json({ text: await generateCOAResponse(sanitized, context) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "COA unavailable" });
     }
@@ -473,9 +490,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/coa/multi-agent", requireAuth, checkRateLimit("coaCalls"), async (req, res) => {
     try {
       const { message, history, workspaceContext, roomId } = req.body;
-      if (!message) return res.status(400).json({ error: "message required" });
+      if (!message || typeof message !== "string") return res.status(400).json({ error: "message required" });
+      const sanitizedMessage = sanitizeRerText(message);
+      if (sanitizedMessage.length === 0) return res.status(400).json({ error: "message must not be empty after sanitization" });
+      const sanitizedHistory = sanitizeChatMessages(Array.isArray(history) ? history : []);
       const ctx = await mergeAgentContext(roomId, workspaceContext);
-      const responses = await generateCOAMultiAgentResponse(message, Array.isArray(history) ? history : [], ctx);
+      const responses = await generateCOAMultiAgentResponse(sanitizedMessage, sanitizedHistory, ctx);
       res.json({ responses });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Multi-agent unavailable" });
