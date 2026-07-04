@@ -37,7 +37,7 @@ Rough split of the document's value:
   persistent Playwright browser pool, a Redis event bus, or long-lived "browser
   pods." When traffic drops, the machine (and every browser session) dies.
 - Running even 4 headless Chromium instances streaming CDP/JPEG frames is
-  **heavy and always-on** — that requires a **Reserved VM** (paid 24/7) with a
+  **heavy and always-on** — that requires a **Reserved VM (paid 24/7)** with a
   real RAM/CPU budget. A multi-master pool with multi-tenant isolation is a
   serious infra operation, not a feature toggle.
 - Therefore the spec's most valuable item (real browser streaming) is also its
@@ -47,8 +47,8 @@ Rough split of the document's value:
 
 ## 2. Staged roadmap
 
-### Phase 1 — Foundation (in progress / mostly done)
-Low cost, high leverage. No infra/cost change.
+### Phase 1 — Foundation (done)
+Low cost, high leverage. No infra/cost change. Fully backward-compatible.
 
 - [x] **AI workspace awareness.** Inject live Conference Room panel state +
   recent Command Center chat + RER pipeline state into COA agent prompts, plus
@@ -61,7 +61,36 @@ Low cost, high leverage. No infra/cost change.
   the workstation survives refresh, reconnect, and redeploy. (Daily rate-limit
   counters remain in-memory by design — they reset daily.)
 
-### Phase 2 — Server-side browser streaming (needs a decision)
+### Phase 1 Extension — SMCBOS Server Foundation (done)
+The core architectural primitives that future agent orchestration will build on.
+All server-side only; no new UI. Existing functionality is untouched.
+
+- [x] **Mission engine / task DAG.** `missions` and `tasks` tables with parentId
+  support for task trees. `MissionManager` owns the lifecycle and emits events.
+- [x] **Unified event mesh.** Typed `eventBus` (EventEmitter-based) bridges to
+  the room WebSocket as additive `type: "event"` messages — existing clients
+  safely ignore unknown types.
+- [x] **Workspace state engine.** `getWorkspaceSnapshot()` + `buildAgentContext()`
+  compose room, members, panels, chat, RER tasks, and missions into a single
+  authoritative state view that all agents consume.
+- [x] **Shared cognitive memory.** `memory_entries` table with scoped key/value
+  storage (roomId + scope + scopeId + key). `sharedMemory` abstraction delegates
+  to storage for upsert/get/delete. Agents can now read/write shared facts.
+- [x] **RER mission mirroring.** Every `@rer` launch now creates a corresponding
+  Mission + 4 Tasks in the orchestration layer. Telemetry only — non-fatal and
+  does not affect the pipeline.
+- [x] **COA server-side context merge.** `/api/coa/chat` and `/api/coa/multi-agent`
+  now merge the client-supplied context with the authoritative server snapshot
+  when a `roomId` is provided (optional, fully backward compatible).
+- [x] **Deferred browser API contract.** `IBrowserSession` / `IBrowserCluster`
+  interfaces defined with a `DeferredBrowserSession` stub that throws a clear
+  "not yet implemented" error. Future Phase 2 implementation plugs in without
+  touching agent code.
+- [x] **REST foundation routes.** `POST /api/mission`, `GET /api/mission/:id`,
+  `GET /api/room/:roomId/missions`, `POST /api/mission/:id/task`,
+  `PATCH /api/task/:id`, `GET /api/workspace/:roomId/snapshot`.
+
+### Phase 2 — Server-side browser streaming (deferred — needs infra decision)
 The one big-ticket item that deserves a real architecture discussion.
 
 - [ ] **Playwright server-side proxy** for iframe-blocked sites, streaming
@@ -71,15 +100,22 @@ The one big-ticket item that deserves a real architecture discussion.
 - **Scope before building:** cost per always-on VM, concurrent-session limits,
   per-panel resource budget, and whether live browsing of blocked sites is core
   enough to the product to justify the ongoing spend.
+- **Also deferred:** CDP streaming, browser recovery/resilience, multi-browser
+  pool management, browser session lifecycle.
 
-### Phase 3 — Intelligence & orchestration (defer until product-market fit)
-Solutions to scale/compliance problems not yet present. Revisit with real usage.
+### Phase 3 — Intelligence & orchestration (partially done; remaining deferred)
+What was pulled forward and completed in the Phase 1 Extension above.
+Remaining items stay deferred until real usage demands them.
 
-- [ ] Mission engine / mission DAG (structured execution objects)
-- [ ] Unified event mesh (event-driven module decoupling)
-- [ ] Shared cognitive memory + knowledge graph (reusable cross-mission knowledge)
-- [ ] Evidence engine (screenshots/MHTML/HAR, hashing, optional signing)
-- [ ] Enterprise governance + multi-tenant isolation
+- [x] Mission engine / mission DAG (completed in Phase 1 Extension)
+- [x] Unified event mesh (completed in Phase 1 Extension)
+- [x] Shared cognitive memory (completed in Phase 1 Extension)
+- [ ] **Knowledge graph.** Vector-backed semantic knowledge network across
+  missions. Deferred — no vector DB or embeddings pipeline yet.
+- [ ] **Evidence engine.** Screenshots/MHTML/HAR capture, hashing, optional
+  signing. Deferred — requires the Phase 2 browser implementation.
+- [ ] **Enterprise governance + multi-tenant isolation.** Deferred — no enterprise
+  customers or compliance requirements yet.
 
 ---
 
@@ -88,11 +124,11 @@ Solutions to scale/compliance problems not yet present. Revisit with real usage.
 | Reported issue | Root cause | Resolution | Phase |
 |---|---|---|---|
 | Blank browser panels | iframe X-Frame-Options / CSP | Immediate block detection + "Open externally"; embeddable defaults | 1 (done) |
-| Blank panels (blocked sites) | Client cannot bypass CSP | Server-side Playwright streaming | 2 |
+| Blank panels (blocked sites) | Client cannot bypass CSP | Server-side Playwright streaming | 2 (deferred) |
 | AI lacks workspace awareness | Stateless prompts | Live context injection into agent prompts | 1 (done) |
 | Workspace state lost on refresh | In-memory storage | Postgres persistence | 1 (done) |
-| Agents operate independently | No shared state | Context injection now; shared memory later | 1 / 3 |
-| Reports don't build on prior work | No long-term memory | Knowledge engine | 3 |
+| Agents operate independently | No shared state | Server-side workspace snapshot + shared memory | 1 Ext (done) |
+| Reports don't build on prior work | No long-term memory | Knowledge engine | 3 (deferred) |
 
 ---
 
