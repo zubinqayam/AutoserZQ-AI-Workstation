@@ -717,38 +717,49 @@ function GitHubView() {
 }
 
 // ── ZQ Conference Room Browser View v3.0 ──────────────────────────────────────
+// Verified against live response headers (X-Frame-Options / CSP frame-ancestors):
+// bing.com, wikipedia.org and archive.org send neither header and load fine in
+// an iframe. duckduckgo.com (including its lite/html subdomains), startpage.com,
+// search.brave.com, perplexity.ai and arxiv.org all send X-Frame-Options:
+// SAMEORIGIN or a restrictive frame-ancestors directive and refuse to embed —
+// they are kept in the engine list below but flagged as Blocked immediately
+// (see BLOCKED_HOST_PATTERNS) so the UI reports accurate status instead of a
+// false "Ready" on a blank panel.
 const SEARCH_ENGINES: Record<string, string> = {
-  // lite.duckduckgo.com is the embeddable (no-JS) endpoint — the main
-  // duckduckgo.com page blocks iframes via X-Frame-Options.
-  duckduckgo: "https://lite.duckduckgo.com/lite/?q=",
   bing:       "https://www.bing.com/search?q=",
+  wikipedia:  "https://en.wikipedia.org/wiki/Special:Search?search=",
+  duckduckgo: "https://lite.duckduckgo.com/lite/?q=",
   startpage:  "https://www.startpage.com/sp/search?query=",
   brave:      "https://search.brave.com/search?q=",
   perplexity: "https://www.perplexity.ai/search?q=",
-  wikipedia:  "https://en.wikipedia.org/wiki/Special:Search?search=",
 };
 
 const TAB_DEFAULTS = [
-  { label: "Browser 1", url: "https://lite.duckduckgo.com/lite/",            color: "#6366f1" },
+  { label: "Browser 1", url: "https://www.bing.com",                         color: "#6366f1" },
   { label: "Browser 2", url: "https://en.wikipedia.org/wiki/Main_Page",      color: "#f97316" },
-  { label: "Browser 3", url: "https://arxiv.org",                            color: "#10b981" },
+  { label: "Browser 3", url: "https://www.bing.com/news",                    color: "#10b981" },
   { label: "Browser 4", url: "https://archive.org",                          color: "#a855f7" },
 ];
 
 // Hosts known to hard-block iframe embedding (X-Frame-Options / CSP).
 // We flag these immediately instead of waiting for a load event that never
 // resolves — the browser silently renders its own "refused to connect" page.
+// bing.com, wikipedia.org and archive.org are intentionally NOT in this list —
+// they were verified (via response headers) to allow iframe embedding, and
+// are documented/offered as working in @cr help / replit.md. Keep this list,
+// the engine selector, and the docs in sync when adding/removing hosts.
 const BLOCKED_HOST_PATTERNS = [
   "google.", "youtube.com", "youtu.be", "twitter.com", "x.com",
   "facebook.com", "instagram.com", "reddit.com", "linkedin.com",
-  "github.com", "gitlab.com", "bing.com", "amazon.com", "netflix.com",
+  "github.com", "gitlab.com", "amazon.com", "netflix.com",
+  "duckduckgo.com", "startpage.com", "brave.com", "perplexity.ai",
+  "arxiv.org", "stackoverflow.com", "stackexchange.com", "medium.com",
+  "semanticscholar.org",
 ];
 
 function hostBlocked(url: string): boolean {
   try {
     const h = new URL(url).hostname.toLowerCase();
-    // Main DuckDuckGo page blocks framing; lite/html subdomains do not.
-    if (h === "duckduckgo.com" || h === "www.duckduckgo.com") return true;
     return BLOCKED_HOST_PATTERNS.some(p => h === p || h.includes(p));
   } catch {
     return false;
@@ -777,12 +788,12 @@ interface EvidenceCapture {
   label: string;
 }
 
-function toUrl(raw: string, engine = "duckduckgo"): string {
+function toUrl(raw: string, engine = "bing"): string {
   const t = raw.trim();
   if (!t) return "";
   if (/^https?:\/\//i.test(t)) return t;
   if (/^[\w.-]+\.\w{2,}(\/|$)/i.test(t)) return `https://${t}`;
-  return (SEARCH_ENGINES[engine] || SEARCH_ENGINES.duckduckgo) + encodeURIComponent(t);
+  return (SEARCH_ENGINES[engine] || SEARCH_ENGINES.bing) + encodeURIComponent(t);
 }
 
 const COLOR_HEX = ["#6366f1", "#f97316", "#10b981", "#a855f7"];
@@ -809,7 +820,7 @@ function ConferenceRoomBrowserView() {
       }));
     }, 6000);
   }, []);
-  const [engine, setEngine] = useState("duckduckgo");
+  const [engine, setEngine] = useState("bing");
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [focusedPanel, setFocusedPanel] = useState(0);
   const [log, setLog] = useState<string[]>([]);
@@ -986,12 +997,12 @@ function ConferenceRoomBrowserView() {
           <select
             className="text-[10px] bg-background border border-border rounded px-1.5 py-0.5 text-muted-foreground"
             value={engine} onChange={e => setEngine(e.target.value)} data-testid="select-search-engine">
-            <option value="duckduckgo">DuckDuckGo</option>
             <option value="bing">Bing</option>
-            <option value="startpage">Startpage (Google proxy)</option>
-            <option value="brave">Brave Search</option>
-            <option value="perplexity">Perplexity AI</option>
             <option value="wikipedia">Wikipedia</option>
+            <option value="duckduckgo">DuckDuckGo (blocked)</option>
+            <option value="startpage">Startpage (blocked)</option>
+            <option value="brave">Brave Search (blocked)</option>
+            <option value="perplexity">Perplexity AI (blocked)</option>
           </select>
           <Button variant="ghost" size="icon" className="h-6 w-6" title="Evidence captures" onClick={() => setShowEvidence(v => !v)} data-testid="btn-evidence">
             <Archive className="w-3 h-3" />

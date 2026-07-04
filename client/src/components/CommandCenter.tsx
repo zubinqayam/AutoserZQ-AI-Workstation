@@ -68,20 +68,20 @@ NAVIGATION COMMANDS:
   @rer  <topic>          → launch RER pipeline
 
 WORKS IN PANELS (iframe-friendly):
-  DuckDuckGo · Bing · Wikipedia · Startpage
-  Brave Search · Archive.org · arXiv · SSRN
-  Stack Overflow · Medium · Substack · GitHub Pages
-  Most docs & news sites
+  Bing · Wikipedia · Archive.org
+  Most docs & news sites without frame restrictions
 
-BLOCKED IN PANELS (X-Frame-Options):
+BLOCKED IN PANELS (X-Frame-Options / CSP):
   Google · Twitter/X · YouTube · Facebook
   Reddit · LinkedIn · GitHub.com (main site)
+  DuckDuckGo (all subdomains) · Startpage · Brave Search
+  Perplexity AI · arXiv · Stack Overflow · Medium
+  Semantic Scholar
 
-WORKAROUNDS FOR GOOGLE:
-  • @tab1 https://www.startpage.com  (Google proxy)
-  • @tab1 https://web.archive.org/web/*/URL  (cached)
+WORKAROUNDS FOR BLOCKED SITES:
+  • @tab1 https://web.archive.org/web/*/URL  (cached copy)
   • Use the ↗ button to open any URL in a real tab
-  • Switch to Bing or DuckDuckGo in the search selector
+  • Switch to Bing or Wikipedia in the search selector
 
 Type @cr help anytime to see this guide.`;
 

@@ -63,9 +63,9 @@ A 4-tab multi-agent research platform with the RER (Review → Enhance → Repor
 - `@cr help` — Show Conference Room navigation guide (local, no API call)
 
 ## Conference Room: iframe-compatible sites
-Works: DuckDuckGo, Bing, Wikipedia, Startpage, Brave Search, Archive.org, arXiv, Semantic Scholar, Stack Overflow, Medium, Substack, GitHub Pages, most docs/news sites.
-Blocked: Google, Twitter/X, YouTube (use embed URL), Facebook, Reddit, LinkedIn, GitHub.com.
-Google workaround: use `@tab1 https://www.startpage.com` (Google proxy that renders in iframe).
+Works (verified via response headers — no X-Frame-Options/frame-ancestors restriction): Bing, Wikipedia, Archive.org, most docs/news sites without frame restrictions.
+Blocked (X-Frame-Options: SAMEORIGIN or restrictive CSP frame-ancestors): Google, Twitter/X, YouTube (use embed URL), Facebook, Reddit, LinkedIn, GitHub.com, DuckDuckGo (all subdomains including lite/html), Startpage, Brave Search, Perplexity AI, arXiv, Stack Overflow, Medium, Semantic Scholar.
+Workaround for blocked sites: use `@tab1 https://web.archive.org/web/*/URL` (cached copy) or the ↗ button to open the real site in a new tab.
 
 ## Deployment
 

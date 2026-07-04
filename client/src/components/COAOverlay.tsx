@@ -79,28 +79,40 @@ export default function COAOverlay({ rerTasks, messages = [], currentUid = "" }:
   }, []);
 
   // ── Drag state ────────────────────────────────────────────────────────────
+  // A minimum pointer-movement threshold before we treat a mousedown+move as
+  // an actual drag. Without this, ordinary click jitter (a few px of mouse
+  // movement between mousedown and mouseup while clicking to open/close the
+  // panel) gets applied as a position delta, making the widget appear to
+  // drift on every click.
+  const DRAG_THRESHOLD = 4;
   const isDragging = useRef(false);
+  const dragArmed  = useRef(false);
   const dragStart  = useRef({ mouseX: 0, mouseY: 0, panelX: 0, panelY: 0 });
 
   const onHeaderMouseDown = useCallback((e: React.MouseEvent) => {
     const el = e.target as HTMLElement;
     if (el.closest("button, input, textarea, [data-no-drag]")) return;
     e.preventDefault();
-    isDragging.current = true;
+    dragArmed.current = true;
+    isDragging.current = false;
     dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, panelX: pos.x, panelY: pos.y };
   }, [pos]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (!isDragging.current) return;
+      if (!dragArmed.current) return;
       const dx = e.clientX - dragStart.current.mouseX;
       const dy = e.clientY - dragStart.current.mouseY;
+      if (!isDragging.current) {
+        if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return;
+        isDragging.current = true;
+      }
       setPos({
         x: Math.max(0, Math.min(window.innerWidth  - 80, dragStart.current.panelX + dx)),
         y: Math.max(0, Math.min(window.innerHeight - 48, dragStart.current.panelY + dy)),
       });
     };
-    const onUp = () => { isDragging.current = false; };
+    const onUp = () => { dragArmed.current = false; isDragging.current = false; };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };

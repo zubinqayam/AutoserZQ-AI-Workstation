@@ -1,1 +1,2 @@
-- [iframe block detection](iframe-block-detection.md) — iframe-blocked sites still fire onLoad with an error page; use a static known-blocked host list, not load events.
+- [iframe block detection](iframe-block-detection.md) — iframe-blocked sites still fire onLoad with an error page; use a static known-blocked host list (verified via curl headers, not assumption), not load events.
+- [draggable widget click drift](draggable-widget-click-drift.md) — mousedown+mouseup drag handlers need a min-pixel movement threshold or plain clicks jitter-drift the element.
