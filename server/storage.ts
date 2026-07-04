@@ -53,6 +53,7 @@ export interface IStorage {
   getRerTask(id: string): Promise<RerTask | undefined>;
   updateRerTask(id: string, updates: Partial<RerTask>): Promise<RerTask | undefined>;
   getRoomRerTasks(roomId: string): Promise<RerTask[]>;
+  getRunningRerTasks(): Promise<RerTask[]>;
   createRerAgentOutput(output: InsertRerAgentOutput): Promise<RerAgentOutput>;
   updateRerAgentOutput(id: string, updates: Partial<RerAgentOutput>): Promise<RerAgentOutput | undefined>;
   getTaskAgentOutputs(taskId: string): Promise<RerAgentOutput[]>;
@@ -264,6 +265,10 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(rerTasks)
       .where(eq(rerTasks.roomId, roomId))
       .orderBy(desc(rerTasks.createdAt));
+  }
+
+  async getRunningRerTasks(): Promise<RerTask[]> {
+    return db.select().from(rerTasks).where(eq(rerTasks.status, "running"));
   }
 
   async createRerAgentOutput(output: InsertRerAgentOutput): Promise<RerAgentOutput> {

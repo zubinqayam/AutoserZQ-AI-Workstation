@@ -2,18 +2,43 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { runTabCycle, generateResearchResponse, generateCOAResponse, generateCOAMultiAgentResponse } from "./gemini";
+import { runTabCycle, generateResearchResponse, generateCOAResponse, generateCOAMultiAgentResponse, computeChecksum } from "./gemini";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { TAB_ROLES, insertRoomSchema } from "@shared/schema";
 import { eventBus } from "./core/eventBus";
 import { missionManager } from "./core/missionManager";
 import { getWorkspaceSnapshot, buildAgentContext } from "./core/workspaceEngine";
+import { pingDb } from "./db";
 
 interface WSClient extends WebSocket {
   roomId?: string;
   uid?: string;
 }
+
+// Strip control characters (\x00-\x1F, \x7F-\x9F), zero-width characters
+// (\u200B-\u200F, \uFEFF), and angle brackets (to neutralize naive HTML/tag
+// injection) from user-supplied RER input, then cap length and require
+// non-empty content. Applied to both the research topic and mode.
+export function sanitizeRerText(raw: string): string {
+  return raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1F\x7F-\x9F]/g, "")
+    .replace(/[\u200B-\u200F\uFEFF]/g, "")
+    .replace(/[<>]/g, "")
+    .trim()
+    .slice(0, 500);
+}
+
+export const rerStartSchema = z.object({
+  roomId: z.string().min(1, "roomId required"),
+  topic: z
+    .string()
+    .min(1, "topic required")
+    .transform(sanitizeRerText)
+    .refine((v) => v.length > 0, { message: "topic must not be empty after sanitization" }),
+  mode: z.enum(["sequential", "parallel"]).default("sequential"),
+});
 
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
@@ -155,6 +180,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(await storage.getChatMessages(req.params.roomId, limit));
   });
   app.get("/api/room/:roomId/state", async (req, res) => res.json((await storage.getRoomState(req.params.roomId)) || null));
+
+  // Health check: reports DB + Gemini reachability so ops can tell "server is
+  // up but degraded" apart from "server is fully down". Intentionally does
+  // NOT require auth — this is meant to be pollable by uptime monitors.
+  app.get("/api/health", async (_req, res) => {
+    const startedAt = Date.now();
+    const [dbOk, geminiOk] = await Promise.all([
+      pingDb(),
+      Promise.resolve(Boolean(process.env.GEMINI_API_KEY)),
+    ]);
+    const status = dbOk && geminiOk ? "ok" : dbOk || geminiOk ? "degraded" : "down";
+    res.json({
+      status,
+      checks: { db: dbOk, gemini: geminiOk, uptime: process.uptime() },
+      responseTimeMs: Date.now() - startedAt,
+    });
+  });
 
   // ──── Cost protection middleware ──────────────────────────────────────────────
   const LIMITS: Record<string, Record<string, number>> = {
@@ -414,8 +456,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // RER: start pipeline
   app.post("/api/rer/start", requireAuth, checkRateLimit("rerLaunches"), async (req, res) => {
     try {
-      const { roomId, topic, mode = "sequential" } = req.body;
-      if (!roomId || !topic) return res.status(400).json({ error: "roomId and topic required" });
+      const parsed = rerStartSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.errors[0]?.message || "Invalid RER input" });
+      }
+      const { roomId, topic, mode } = parsed.data;
 
       const taskId = randomUUID();
       const task = await storage.createRerTask({ id: taskId, roomId, topic, mode, status: "running", currentStep: 0, totalSteps: 4 });
@@ -569,7 +614,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Crash-resume: any RER task still marked "running" at startup was mid-flight
+  // when the process died. Verify the last completed tab's checkpoint hash
+  // (guards against a truncated/corrupted write) before resuming from the next
+  // tab. Parallel-mode tasks are simpler to corrupt via partial fan-out, so we
+  // conservatively mark them errored rather than guess which round to redo.
+  resumeInterruptedRerTasks().catch((err) =>
+    console.error("resumeInterruptedRerTasks failed (non-fatal):", err)
+  );
+
   return httpServer;
+
+  async function resumeInterruptedRerTasks() {
+    const running = await storage.getRunningRerTasks();
+    for (const task of running) {
+      try {
+        if (task.mode !== "sequential") {
+          await storage.updateRerTask(task.id, { status: "error" });
+          console.warn(`[resume] Task ${task.id} (${task.mode}) left running at startup — marked error (parallel resume unsupported).`);
+          continue;
+        }
+
+        const outputs = await storage.getTaskAgentOutputs(task.id);
+        outputs.sort((a, b) => a.tabIndex - b.tabIndex);
+
+        let lastGoodIndex = -1;
+        let lastGoodOutput: string | null = null;
+        for (const o of outputs) {
+          if (o.status !== "done" || !o.output) break;
+          if (o.checkpointHash && computeChecksum(o.output) !== o.checkpointHash) {
+            console.error(`[resume] Task ${task.id} tab ${o.tabIndex} checkpoint hash mismatch — checkpoint chain broken, aborting resume.`);
+            await storage.updateRerTask(task.id, { status: "error" });
+            lastGoodIndex = -2;
+            break;
+          }
+          lastGoodIndex = o.tabIndex;
+          lastGoodOutput = o.output;
+        }
+        if (lastGoodIndex === -2) continue;
+
+        if (lastGoodIndex >= 3) {
+          await storage.updateRerTask(task.id, { status: "done", completedAt: new Date(), currentStep: 4 });
+          continue;
+        }
+
+        console.log(`[resume] Resuming task ${task.id} from tab ${lastGoodIndex + 2} of 4.`);
+        const outputIds = outputs.map((o) => o.id);
+        resumeSequentialPipeline(task.id, task.roomId, task.topic, outputIds, lastGoodIndex + 1, lastGoodOutput, () => {});
+      } catch (err) {
+        console.error(`[resume] Failed to resume task ${task.id}:`, err);
+      }
+    }
+  }
 }
 
 // ─── SEQUENTIAL: Tab1 → Tab2 → Tab3 → Tab4, each gets previous tab's full report ───
@@ -577,9 +673,28 @@ async function runSequentialPipeline(
   taskId: string, roomId: string, topic: string,
   outputIds: string[], broadcast: (m: any) => void
 ) {
-  let previousReport: string | null = null;
+  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, 0, null, broadcast);
+}
 
-  for (let i = 0; i < 4; i++) {
+// Resume a sequential RER pipeline after a crash. `startIndex` is the tab
+// index (0-based) to resume from; `previousReportSeed` is the last verified
+// good report to feed into that tab (null if resuming from tab 1).
+async function resumeSequentialPipeline(
+  taskId: string, roomId: string, topic: string,
+  outputIds: string[], startIndex: number, previousReportSeed: string | null,
+  broadcast: (m: any) => void
+) {
+  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, startIndex, previousReportSeed, broadcast);
+}
+
+async function sequentialPipelineLoop(
+  taskId: string, roomId: string, topic: string,
+  outputIds: string[], startIndex: number, previousReportSeed: string | null,
+  broadcast: (m: any) => void
+) {
+  let previousReport: string | null = previousReportSeed;
+
+  for (let i = startIndex; i < 4; i++) {
     const tabNumber = i + 1;
     const outputId = outputIds[i];
 
@@ -594,9 +709,9 @@ async function runSequentialPipeline(
 
     try {
       // Each tab gets the PREVIOUS tab's full report as input
-      const result = await runTabCycle(tabNumber, topic, previousReport);
+      const result = await runTabCycle(tabNumber, topic, previousReport, taskId);
 
-      await storage.updateRerAgentOutput(outputId, { status: "done", output: result });
+      await storage.updateRerAgentOutput(outputId, { status: "done", output: result, checkpointHash: computeChecksum(result) });
       await storage.updateRerTask(taskId, { currentStep: i + 1 });
       await broadcastState(taskId, broadcast);
 
@@ -632,14 +747,14 @@ async function runParallelPipeline(
   await broadcastState(taskId, broadcast);
 
   const round1 = await Promise.allSettled(
-    [1, 2, 3, 4].map(tabNum => runTabCycle(tabNum, topic, null))
+    [1, 2, 3, 4].map(tabNum => runTabCycle(tabNum, topic, null, taskId))
   );
 
   const round1Results: (string | null)[] = [];
   for (let i = 0; i < 4; i++) {
     const r = round1[i];
     if (r.status === "fulfilled") {
-      await storage.updateRerAgentOutput(outputIds[i], { status: "done", output: r.value });
+      await storage.updateRerAgentOutput(outputIds[i], { status: "done", output: r.value, checkpointHash: computeChecksum(r.value) });
       round1Results.push(r.value);
     } else {
       await storage.updateRerAgentOutput(outputIds[i], { status: "error", output: `Error: ${r.reason}` });
@@ -666,14 +781,14 @@ async function runParallelPipeline(
 
   const round2 = await Promise.allSettled(
     [1, 2, 3, 4].map(tabNum =>
-      runTabCycle(tabNum, topic, combinedContext)
+      runTabCycle(tabNum, topic, combinedContext, taskId)
     )
   );
 
   for (let i = 0; i < 4; i++) {
     const r = round2[i];
     if (r.status === "fulfilled") {
-      await storage.updateRerAgentOutput(outputIds[i], { status: "done", output: r.value });
+      await storage.updateRerAgentOutput(outputIds[i], { status: "done", output: r.value, checkpointHash: computeChecksum(r.value) });
     } else {
       await storage.updateRerAgentOutput(outputIds[i], { status: "error", output: `Round 2 error: ${r.reason}` });
     }

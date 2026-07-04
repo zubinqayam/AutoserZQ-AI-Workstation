@@ -13,3 +13,14 @@ if (!process.env.DATABASE_URL) {
 
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle({ client: pool, schema });
+
+// Lightweight liveness check used by /api/health — does not depend on any
+// application table existing, just that the connection can round-trip a query.
+export async function pingDb(): Promise<boolean> {
+  try {
+    await pool.query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  }
+}

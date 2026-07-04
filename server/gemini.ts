@@ -1,6 +1,89 @@
 import { GoogleGenAI } from "@google/genai";
+import { createHash, randomUUID } from "crypto";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+
+// SHA-256 hex digest of a string. Used to fingerprint RER checkpoint output so
+// resume-after-crash can detect corrupted/truncated rows before trusting them.
+export function computeChecksum(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+// ── Retry/backoff around Gemini calls ────────────────────────────────────────
+// Transient failures (rate limiting, upstream overload, timeouts) are worth
+// retrying with backoff; permanent failures (bad request, bad auth) are not —
+// retrying those just wastes attempts and delays surfacing a real problem.
+function extractStatusCode(err: any): number | undefined {
+  const candidates = [err?.status, err?.code, err?.response?.status, err?.error?.code];
+  for (const c of candidates) {
+    const n = typeof c === "string" ? parseInt(c, 10) : c;
+    if (typeof n === "number" && !Number.isNaN(n)) return n;
+  }
+  return undefined;
+}
+
+export function isTransientGeminiError(err: any): boolean {
+  const status = extractStatusCode(err);
+  if (status === 429 || status === 503 || status === 500 || status === 502 || status === 504) return true;
+  const message = String(err?.message || "").toLowerCase();
+  if (status === 400 || status === 401 || status === 403) return false;
+  return (
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("econnreset") ||
+    message.includes("etimedout") ||
+    message.includes("overloaded") ||
+    message.includes("unavailable") ||
+    message.includes("rate limit")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface RetryOptions {
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  traceId?: string;
+  label?: string;
+}
+
+// Exponential backoff (1s, 2s, 4s, ...) with full jitter (random value in
+// [0, delay]) so many concurrent tabs retrying at once don't all hammer the
+// API at the exact same instant ("thundering herd").
+export async function callGeminiWithRetry<T>(
+  fn: () => Promise<T>,
+  options: RetryOptions = {}
+): Promise<T> {
+  const { maxAttempts = 3, baseDelayMs = 1000, label = "gemini-call" } = options;
+  const traceId = options.traceId || randomUUID().slice(0, 8);
+  let lastErr: any;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      const transient = isTransientGeminiError(err);
+      if (!transient || attempt === maxAttempts) {
+        console.error(
+          `[gemini][${traceId}] ${label} failed on attempt ${attempt}/${maxAttempts} ` +
+          `(${transient ? "transient, out of retries" : "permanent"}): ${err?.message || err}`
+        );
+        throw err;
+      }
+      const cappedDelay = baseDelayMs * 2 ** (attempt - 1);
+      const jitteredDelay = Math.random() * cappedDelay; // full jitter
+      console.warn(
+        `[gemini][${traceId}] ${label} transient error on attempt ${attempt}/${maxAttempts} ` +
+        `(${err?.message || err}) — retrying in ${Math.round(jitteredDelay)}ms`
+      );
+      await sleep(jitteredDelay);
+    }
+  }
+  throw lastErr;
+}
 
 interface ChatMessage {
   role: string;
@@ -395,7 +478,8 @@ Your role: Help users with research topics, Conference Room navigation, web work
 export async function runTabCycle(
   tabNumber: number,
   topic: string,
-  receivedReport: string | null
+  receivedReport: string | null,
+  traceId?: string
 ): Promise<string> {
   const systemPrompt = TAB_SYSTEM_PROMPTS[tabNumber] || TAB_SYSTEM_PROMPTS[1];
 
@@ -406,14 +490,18 @@ export async function runTabCycle(
     userContent = `Research Topic: **${topic}**\n\n${"=".repeat(60)}\nREPORT RECEIVED FROM PREVIOUS TAB:\n${"=".repeat(60)}\n\n${receivedReport}\n\n${"=".repeat(60)}\n\nNow run your full 4-step cycle (Review the above → Deep Research → Enhance → Produce your Report).`;
   }
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    config: {
-      systemInstruction: systemPrompt,
-      thinkingConfig: { thinkingBudget: 10000 },
-    },
-    contents: [{ role: "user", parts: [{ text: userContent }] }],
-  });
+  const response = await callGeminiWithRetry(
+    () =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        config: {
+          systemInstruction: systemPrompt,
+          thinkingConfig: { thinkingBudget: 10000 },
+        },
+        contents: [{ role: "user", parts: [{ text: userContent }] }],
+      }),
+    { label: `tab${tabNumber}-cycle`, traceId }
+  );
 
   return response.text || "Agent produced no output.";
 }

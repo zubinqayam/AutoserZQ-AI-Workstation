@@ -1,2 +1,4 @@
 - [iframe block detection](iframe-block-detection.md) — iframe-blocked sites still fire onLoad with an error page; use a static known-blocked host list (verified via curl headers, not assumption), not load events.
 - [draggable widget click drift](draggable-widget-click-drift.md) — mousedown+mouseup drag handlers need a min-pixel movement threshold or plain clicks jitter-drift the element.
+- [Gemini free-tier daily quota](gemini-quota-limits.md) — 429 RESOURCE_EXHAUSTED from Gemini can mean daily quota (20 req/day free tier), not a transient blip; retries won't fix it.
+- [RER checkpoint/resume design](rer-checkpoint-resume.md) — sequential RER pipeline resume verifies per-tab SHA-256 hash before trusting a checkpoint; parallel mode resume intentionally unsupported.

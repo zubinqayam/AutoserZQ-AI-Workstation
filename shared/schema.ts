@@ -79,6 +79,9 @@ export const rerAgentOutputs = pgTable("rer_agent_outputs", {
   status: varchar("status").notNull().default("idle"), // "idle" | "thinking" | "done" | "error"
   output: text("output"),
   receivedInput: text("received_input"),
+  // SHA-256 hex digest of `output`, populated whenever output is written. Used
+  // to verify checkpoint integrity on resume (see server/routes.ts resumeInterruptedRerTasks).
+  checkpointHash: varchar("checkpoint_hash"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
