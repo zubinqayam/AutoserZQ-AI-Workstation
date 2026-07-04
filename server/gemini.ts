@@ -9,6 +9,48 @@ export function computeChecksum(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+// Live Gemini reachability probe. Uses models.get() — a lightweight metadata
+// lookup, not a generation call — so it verifies the API key/network/service
+// are actually working without burning generation quota. Bounded with a
+// strict timeout so a hung Gemini call can never hang the caller indefinitely.
+export async function pingGemini(timeoutMs = 3000): Promise<boolean> {
+  if (!process.env.GEMINI_API_KEY) return false;
+  try {
+    await Promise.race([
+      ai.models.get({ model: "gemini-2.5-flash" }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("gemini health probe timeout")), timeoutMs)),
+    ]);
+    return true;
+  } catch (err) {
+    console.warn("[health] Gemini reachability probe failed:", (err as any)?.message || err);
+    return false;
+  }
+}
+
+// A real Gemini round-trip can take hundreds of ms — too slow to run inline
+// on every /api/health request under a <200ms budget. Instead we probe in the
+// background on an interval and let /api/health read the cached result
+// instantly. `null` means "not probed yet" (cold start); callers should treat
+// that as best-effort-unknown rather than "down".
+let cachedGeminiHealth: boolean | null = null;
+let geminiHealthInterval: NodeJS.Timeout | null = null;
+
+export function getCachedGeminiHealth(): boolean | null {
+  return cachedGeminiHealth;
+}
+
+export function startGeminiHealthMonitor(intervalMs = 30000): void {
+  const refresh = () => {
+    pingGemini(2000)
+      .then((ok) => { cachedGeminiHealth = ok; })
+      .catch(() => { cachedGeminiHealth = false; });
+  };
+  refresh();
+  if (geminiHealthInterval) clearInterval(geminiHealthInterval);
+  geminiHealthInterval = setInterval(refresh, intervalMs);
+  geminiHealthInterval.unref?.();
+}
+
 // ── Retry/backoff around Gemini calls ────────────────────────────────────────
 // Transient failures (rate limiting, upstream overload, timeouts) are worth
 // retrying with backoff; permanent failures (bad request, bad auth) are not —

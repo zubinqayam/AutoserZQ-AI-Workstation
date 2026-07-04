@@ -6,8 +6,9 @@ import {
   computeChecksum,
   isTransientGeminiError,
   callGeminiWithRetry,
+  pingGemini,
 } from "../server/gemini";
-import { sanitizeRerText, rerStartSchema } from "../server/routes";
+import { sanitizeRerText, rerStartSchema, verifyCheckpointChain } from "../server/routes";
 import { pingDb } from "../server/db";
 
 let passed = 0;
@@ -31,6 +32,39 @@ async function main() {
   await check("pingDb() resolves boolean", async () => {
     const ok = await pingDb();
     assert.strictEqual(typeof ok, "boolean");
+  });
+
+  await check("pingGemini() resolves boolean and respects timeout", async () => {
+    const ok = await pingGemini(3000);
+    assert.strictEqual(typeof ok, "boolean");
+  });
+
+  await check("pingGemini() returns false quickly on a near-zero timeout (bounded latency)", async () => {
+    const start = Date.now();
+    const ok = await pingGemini(1);
+    const elapsed = Date.now() - start;
+    assert.strictEqual(typeof ok, "boolean");
+    assert.ok(elapsed < 2000, `expected probe to resolve quickly, took ${elapsed}ms`);
+  });
+
+  // /api/health reads Gemini reachability from a background-refreshed cache
+  // (see startGeminiHealthMonitor) rather than probing live inline, so the
+  // endpoint itself stays fast regardless of Gemini's real-world latency.
+  // Give the server's background monitor a moment to complete its first probe.
+  await new Promise((r) => setTimeout(r, 1500));
+
+  await check("GET /api/health returns expected shape within 200ms (requires running server on PORT/5000)", async () => {
+    const port = process.env.PORT || "5000";
+    const start = Date.now();
+    const res = await fetch(`http://localhost:${port}/api/health`);
+    const elapsed = Date.now() - start;
+    const body = await res.json();
+    assert.strictEqual(res.status, 200);
+    assert.ok(["ok", "degraded", "down"].includes(body.status));
+    assert.strictEqual(typeof body.checks.db, "boolean");
+    assert.strictEqual(typeof body.checks.gemini, "boolean");
+    assert.strictEqual(typeof body.checks.uptime, "number");
+    assert.ok(elapsed < 200, `expected /api/health to respond in <200ms, took ${elapsed}ms`);
   });
 
   // ── 2. Retry/backoff ─────────────────────────────────────────────────────
@@ -146,6 +180,37 @@ async function main() {
     assert.strictEqual(a, b);
     assert.notStrictEqual(a, c);
     assert.strictEqual(a.length, 64); // sha256 hex
+  });
+
+  await check("verifyCheckpointChain accepts a fully valid chain and finds correct resume point", () => {
+    const outputs = [0, 1].map((i) => {
+      const output = `tab${i} output`;
+      return { tabIndex: i, status: "done", output, checkpointHash: computeChecksum(output) };
+    });
+    const { lastGoodIndex, intact } = verifyCheckpointChain(outputs);
+    assert.strictEqual(intact, true);
+    assert.strictEqual(lastGoodIndex, 1);
+  });
+
+  await check("verifyCheckpointChain rejects a tampered checkpoint (hash mismatch) and stops at the last good tab", () => {
+    const goodOutput = "tab0 output";
+    const outputs = [
+      { tabIndex: 0, status: "done", output: goodOutput, checkpointHash: computeChecksum(goodOutput) },
+      { tabIndex: 1, status: "done", output: "tampered output", checkpointHash: "0".repeat(64) },
+      { tabIndex: 2, status: "idle", output: null, checkpointHash: null },
+    ];
+    const { lastGoodIndex, intact } = verifyCheckpointChain(outputs);
+    assert.strictEqual(intact, false);
+    assert.strictEqual(lastGoodIndex, 0);
+  });
+
+  await check("verifyCheckpointChain rejects a done checkpoint with a missing hash", () => {
+    const outputs = [
+      { tabIndex: 0, status: "done", output: "tab0 output", checkpointHash: null },
+    ];
+    const { lastGoodIndex, intact } = verifyCheckpointChain(outputs);
+    assert.strictEqual(intact, false);
+    assert.strictEqual(lastGoodIndex, -1);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

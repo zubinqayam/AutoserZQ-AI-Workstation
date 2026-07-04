@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { runTabCycle, generateResearchResponse, generateCOAResponse, generateCOAMultiAgentResponse, computeChecksum } from "./gemini";
+import { runTabCycle, generateResearchResponse, generateCOAResponse, generateCOAMultiAgentResponse, computeChecksum, getCachedGeminiHealth, startGeminiHealthMonitor } from "./gemini";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { TAB_ROLES, insertRoomSchema } from "@shared/schema";
@@ -39,6 +39,30 @@ export const rerStartSchema = z.object({
     .refine((v) => v.length > 0, { message: "topic must not be empty after sanitization" }),
   mode: z.enum(["sequential", "parallel"]).default("sequential"),
 });
+
+interface CheckpointLike {
+  tabIndex: number;
+  status: string;
+  output: string | null;
+  checkpointHash: string | null;
+}
+
+// Walk a sequential RER task's tab outputs in order and verify each "done"
+// checkpoint's stored hash matches a fresh hash of its stored output. A
+// missing or mismatched hash breaks the chain — we never trust/resume on top
+// of unverifiable state. Returns the last verified tab index (-1 if none) and
+// whether the chain is intact.
+export function verifyCheckpointChain(outputs: CheckpointLike[]): { lastGoodIndex: number; intact: boolean } {
+  let lastGoodIndex = -1;
+  for (const o of outputs) {
+    if (o.status !== "done" || !o.output) break;
+    if (!o.checkpointHash || computeChecksum(o.output) !== o.checkpointHash) {
+      return { lastGoodIndex, intact: false };
+    }
+    lastGoodIndex = o.tabIndex;
+  }
+  return { lastGoodIndex, intact: true };
+}
 
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
@@ -186,10 +210,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // NOT require auth — this is meant to be pollable by uptime monitors.
   app.get("/api/health", async (_req, res) => {
     const startedAt = Date.now();
-    const [dbOk, geminiOk] = await Promise.all([
-      pingDb(),
-      Promise.resolve(Boolean(process.env.GEMINI_API_KEY)),
-    ]);
+    const dbOk = await pingDb();
+    // Gemini reachability is read from a background-refreshed cache (see
+    // startGeminiHealthMonitor) rather than probed live here — a real
+    // round-trip to Gemini can take hundreds of ms, which would blow our
+    // <200ms health-check budget. `null` (not probed yet, e.g. right after
+    // boot) is treated as best-effort "ok" so a cold start doesn't falsely
+    // report "down" before the first background probe completes.
+    const geminiCached = getCachedGeminiHealth();
+    const geminiOk = geminiCached ?? Boolean(process.env.GEMINI_API_KEY);
     const status = dbOk && geminiOk ? "ok" : dbOk || geminiOk ? "degraded" : "down";
     res.json({
       status,
@@ -623,6 +652,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     console.error("resumeInterruptedRerTasks failed (non-fatal):", err)
   );
 
+  // Background Gemini reachability probe for /api/health (see route above).
+  startGeminiHealthMonitor();
+
   return httpServer;
 
   async function resumeInterruptedRerTasks() {
@@ -638,20 +670,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const outputs = await storage.getTaskAgentOutputs(task.id);
         outputs.sort((a, b) => a.tabIndex - b.tabIndex);
 
-        let lastGoodIndex = -1;
-        let lastGoodOutput: string | null = null;
-        for (const o of outputs) {
-          if (o.status !== "done" || !o.output) break;
-          if (o.checkpointHash && computeChecksum(o.output) !== o.checkpointHash) {
-            console.error(`[resume] Task ${task.id} tab ${o.tabIndex} checkpoint hash mismatch — checkpoint chain broken, aborting resume.`);
-            await storage.updateRerTask(task.id, { status: "error" });
-            lastGoodIndex = -2;
-            break;
-          }
-          lastGoodIndex = o.tabIndex;
-          lastGoodOutput = o.output;
+        const { lastGoodIndex, intact } = verifyCheckpointChain(outputs);
+        if (!intact) {
+          console.error(`[resume] Task ${task.id} checkpoint chain broken at/after tab ${lastGoodIndex + 1} — aborting resume.`);
+          await storage.updateRerTask(task.id, { status: "error" });
+          continue;
         }
-        if (lastGoodIndex === -2) continue;
+        const lastGoodOutput = lastGoodIndex >= 0 ? (outputs[lastGoodIndex].output as string) : null;
 
         if (lastGoodIndex >= 3) {
           await storage.updateRerTask(task.id, { status: "done", completedAt: new Date(), currentStep: 4 });
