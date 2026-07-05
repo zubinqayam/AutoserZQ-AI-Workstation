@@ -630,6 +630,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/workspace/:roomId/snapshot", async (req, res) => res.json(await getWorkspaceSnapshot(req.params.roomId)));
 
+  // ── ZQ Conference Room SERP: real Google search results via SerpAPI ────────
+  // Standalone tool, separate from the 4-panel Conference Room. Server-side
+  // key only — never exposed to the client. Normalizes organic_results into
+  // a small, stable shape so the frontend doesn't need to know SerpAPI's
+  // response format.
+  app.post("/api/serp/search", async (req, res) => {
+    const apiKey = process.env.SERPAPI_KEY;
+    if (!apiKey) {
+      return res.status(501).json({ error: "SerpAPI is not configured. Set SERPAPI_KEY to enable search." });
+    }
+    const { q, location, google_domain, hl, gl } = req.body || {};
+    if (!q || typeof q !== "string" || !q.trim()) {
+      return res.status(400).json({ error: "q (search query) is required" });
+    }
+    try {
+      const params = new URLSearchParams({
+        engine: "google",
+        q: q.trim().slice(0, 500),
+        api_key: apiKey,
+      });
+      if (typeof location === "string" && location.trim()) params.set("location", location.trim().slice(0, 200));
+      if (typeof google_domain === "string" && google_domain.trim()) params.set("google_domain", google_domain.trim().slice(0, 100));
+      if (typeof hl === "string" && hl.trim()) params.set("hl", hl.trim().slice(0, 10));
+      if (typeof gl === "string" && gl.trim()) params.set("gl", gl.trim().slice(0, 10));
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      let response: Response;
+      try {
+        response = await fetch(`https://serpapi.com/search.json?${params.toString()}`, { signal: controller.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data) {
+        const message = (data && (data as any).error) || `SerpAPI request failed (HTTP ${response.status})`;
+        return res.status(502).json({ error: message });
+      }
+      if ((data as any).error) {
+        return res.status(502).json({ error: (data as any).error });
+      }
+
+      const organic = Array.isArray((data as any).organic_results) ? (data as any).organic_results : [];
+      const results = organic.map((r: any) => ({
+        position: typeof r.position === "number" ? r.position : null,
+        title: typeof r.title === "string" ? r.title : "",
+        link: typeof r.link === "string" ? r.link : "",
+        displayedLink: typeof r.displayed_link === "string" ? r.displayed_link : "",
+        snippet: typeof r.snippet === "string" ? r.snippet : "",
+        favicon: typeof r.favicon === "string" ? r.favicon : null,
+      })).filter((r: any) => r.title && r.link);
+
+      res.json({
+        results,
+        totalResults: (data as any).search_information?.total_results ?? null,
+        searchParameters: (data as any).search_parameters ?? null,
+      });
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        return res.status(504).json({ error: "SerpAPI request timed out" });
+      }
+      res.status(500).json({ error: err.message || "Search failed" });
+    }
+  });
+
   // ── URL Content Fetcher (moved inside registerRoutes) ──────────────────────
   app.post("/api/fetch-url", async (req, res) => {
     const { url } = req.body;
