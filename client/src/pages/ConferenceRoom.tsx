@@ -4,6 +4,7 @@ import RoomSidebar from "@/components/RoomSidebar";
 import AgentTab from "@/components/AgentTab";
 import CommandCenter from "@/components/CommandCenter";
 import COAOverlay from "@/components/COAOverlay";
+import SerpSearchView from "@/components/SerpSearchView";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -198,6 +199,7 @@ export default function ConferenceRoom() {
             />
           )}
           {activeNav === "conferenceroom" && <ConferenceRoomBrowserView />}
+          {activeNav === "serp" && <SerpSearchView />}
           {activeNav === "history" && <HistoryView rerTasks={rerTasks} />}
           {activeNav === "reports" && <ReportsView rerTasks={rerTasks} />}
           {activeNav === "github" && <GitHubView />}

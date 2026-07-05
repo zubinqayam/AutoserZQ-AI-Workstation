@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import {
   Settings, FlaskConical, BookOpen, FolderPlus, ChevronRight, ChevronDown,
   Folder, FileText, LayoutDashboard, Plus, MoreHorizontal, LogOut, User,
-  GitBranch, History, Gauge, AlertTriangle, Monitor,
+  GitBranch, History, Gauge, AlertTriangle, Monitor, SearchCode,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -109,6 +109,7 @@ export default function RoomSidebar({ roomId, membersOnline, activeNav, onNavCha
   const NAV_ITEMS = [
     { id: "workspace",      label: "Workspace",       Icon: LayoutDashboard },
     { id: "conferenceroom", label: "Conference Room",  Icon: Monitor },
+    { id: "serp",           label: "Conference Room SERP", Icon: SearchCode },
     { id: "rer",            label: "RER Pipeline",    Icon: FlaskConical },
     { id: "history",        label: "History",         Icon: History },
     { id: "reports",        label: "Reports",         Icon: BookOpen },
