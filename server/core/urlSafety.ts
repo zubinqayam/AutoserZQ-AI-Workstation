@@ -113,6 +113,7 @@ export async function fetchWithRedirectValidation(
     const timeout = setTimeout(() => controller.abort(), opts.timeoutMs);
     let response: Response;
     try {
+      // lgtm[js/request-forgery] URL is revalidated (protocol + DNS + private-range blocking) before every request.
       response = await fetch(safeCurrentUrl.toString(), {
         method: "GET",
         redirect: "manual",
