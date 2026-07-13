@@ -211,7 +211,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   ) => async (req: any, res: any, next: any) => {
     const uid = req.headers["x-uid"] as string;
     if (!uid) return res.status(401).json({ error: "Login required", code: "AUTH_REQUIRED" });
-    const tier = await storage.getTier(uid) as "free" | "pro" | "enterprise";
+    const tier = await getValidatedTier(uid);
     const usage = await storage.getUsage(uid);
     const limit = LIMITS[tier][field];
     const used = usage[field] ?? 0;
@@ -257,7 +257,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const uid = req.headers["x-uid"] as string;
     if (!uid) return res.status(401).json({ error: "Not authenticated" });
     const usage = await storage.getUsage(uid);
-    const tier = await storage.getTier(uid) as "free" | "pro" | "enterprise";
+    const tier = await getValidatedTier(uid);
     const totals = await budgetLedger.getBudgetTotals(uid);
     const monthlyCeiling = budgetConfig.monthlyCeilingMicros;
     const utilization = monthlyCeiling > BigInt(0)
@@ -768,6 +768,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   startGeminiHealthMonitor();
 
   return httpServer;
+
+  async function getValidatedTier(uid: string): Promise<"free" | "pro" | "enterprise"> {
+    const tier = await storage.getTier(uid);
+    if (tier === "free" || tier === "pro" || tier === "enterprise") return tier;
+    return "free";
+  }
 
   async function resumeInterruptedRerTasks() {
     const running = await storage.getRunningRerTasks();
