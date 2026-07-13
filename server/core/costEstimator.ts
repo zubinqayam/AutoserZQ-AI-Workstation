@@ -27,11 +27,11 @@ export function estimateGeminiTokens(params: {
   const pricing = getPricingEntry("gemini", params.model || "gemini-2.5-flash");
   const pricingStale = isPricingStale();
 
-  let estimatedCostMicros = 0n;
+  let estimatedCostMicros = BigInt(0);
   if (pricing?.verified) {
-    estimatedCostMicros += (pricing.inputMicrosPerUnit || 0n) * BigInt(estimatedInputTokens);
-    estimatedCostMicros += (pricing.outputMicrosPerUnit || 0n) * BigInt(estimatedOutputTokens);
-    estimatedCostMicros += (pricing.thinkingMicrosPerUnit || 0n) * BigInt(estimatedThinkingTokens);
+    estimatedCostMicros += (pricing.inputMicrosPerUnit || BigInt(0)) * BigInt(estimatedInputTokens);
+    estimatedCostMicros += (pricing.outputMicrosPerUnit || BigInt(0)) * BigInt(estimatedOutputTokens);
+    estimatedCostMicros += (pricing.thinkingMicrosPerUnit || BigInt(0)) * BigInt(estimatedThinkingTokens);
   }
 
   return {

@@ -260,8 +260,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const tier = await storage.getTier(uid) as "free" | "pro" | "enterprise";
     const totals = await budgetLedger.getBudgetTotals(uid);
     const monthlyCeiling = budgetConfig.monthlyCeilingMicros;
-    const utilization = monthlyCeiling > 0n
-      ? Number(((totals.monthlySpentMicros + totals.activeReservationMicros) * 10000n) / monthlyCeiling) / 100
+    const utilization = monthlyCeiling > BigInt(0)
+      ? Number(((totals.monthlySpentMicros + totals.activeReservationMicros) * BigInt(10000)) / monthlyCeiling) / 100
       : 0;
     const legacyLimits = {
       geminiPerDay: LIMITS[tier].geminiCalls,
@@ -637,7 +637,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       uid,
       provider: "serpapi",
       operationType: "search",
-      estimatedMicros: 0n,
+      estimatedMicros: BigInt(0),
       monthlyCeilingMicros: budgetConfig.monthlyCeilingMicros,
     });
     if (!reserve.allowed) {
@@ -693,7 +693,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       })).filter((r: any) => r.title && r.link);
 
       if (reservationId) {
-        await budgetLedger.settleReservation(reservationId, 0n);
+        await budgetLedger.settleReservation(reservationId, BigInt(0));
         eventBus.publish("budget.settled", "global", { uid, provider: "serpapi", reservationId });
       }
       if (typeof res.locals.postUsageIncrement === "function") {

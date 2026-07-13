@@ -52,7 +52,7 @@ const parseDbBigInt = (value: unknown): bigint => {
   if (typeof value === "bigint") return value;
   if (typeof value === "number") return BigInt(Math.trunc(value));
   if (typeof value === "string" && value.length > 0) return BigInt(value);
-  return 0n;
+  return BigInt(0);
 };
 
 class BudgetLedger {

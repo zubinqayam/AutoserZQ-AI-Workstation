@@ -18,7 +18,7 @@ const bigIntFromEnv = (name: string, fallback: bigint): bigint => {
   if (!raw) return fallback;
   try {
     const parsed = BigInt(raw);
-    return parsed >= 0n ? parsed : fallback;
+    return parsed >= BigInt(0) ? parsed : fallback;
   } catch {
     return fallback;
   }
@@ -43,7 +43,7 @@ export interface BudgetConfig {
 export const budgetConfig: BudgetConfig = {
   emergencyKillSwitch: process.env.BUDGET_KILL_SWITCH === "true",
   zeroPaidSpendMode: process.env.ZERO_PAID_SPEND_MODE === "true",
-  monthlyCeilingMicros: bigIntFromEnv("MONTHLY_BUDGET_CEILING_MICROS", 10_000_000n),
+  monthlyCeilingMicros: bigIntFromEnv("MONTHLY_BUDGET_CEILING_MICROS", BigInt(10_000_000)),
   maxPricingAgeDays: intFromEnv("PRICING_MAX_AGE_DAYS", 30),
   tiers: {
     free: {

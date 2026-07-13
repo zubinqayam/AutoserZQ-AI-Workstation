@@ -50,7 +50,9 @@ class QuotaEnforcer {
 
     const ceiling = budgetConfig.monthlyCeilingMicros;
     const budgetUsed = totals.monthlySpentMicros + totals.activeReservationMicros;
-    const usedPercent = ceiling > 0n ? Number((budgetUsed * 10000n) / ceiling) / 100 : 0;
+    const usedPercent = ceiling > BigInt(0)
+      ? Number((budgetUsed * BigInt(10000)) / ceiling) / 100
+      : 0;
     const status = this.computeBudgetStatus(usedPercent);
     if (status === "warning") eventBus.publish("budget.soft_threshold", "global", { uid, usedPercent });
     if (status === "degraded" || status === "exhausted") eventBus.publish("budget.hard_threshold", "global", { uid, usedPercent });
