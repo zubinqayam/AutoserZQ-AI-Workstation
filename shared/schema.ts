@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean, integer, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, boolean, integer, jsonb, uniqueIndex, date, bigint } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -151,6 +151,47 @@ export const memoryEntries = pgTable("memory_entries", {
   memScopeKeyUnique: uniqueIndex("memory_scope_key_unique").on(t.roomId, t.scope, t.scopeId, t.key),
 }));
 
+export const usageLedger = pgTable("usage_ledger", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  uid: varchar("uid").notNull(),
+  usageDate: date("usage_date").notNull(),
+  usageMonth: varchar("usage_month", { length: 7 }).notNull(),
+  geminiInputMicros: bigint("gemini_input_micros", { mode: "bigint" }).notNull().default(0n),
+  geminiOutputMicros: bigint("gemini_output_micros", { mode: "bigint" }).notNull().default(0n),
+  geminiThinkingMicros: bigint("gemini_thinking_micros", { mode: "bigint" }).notNull().default(0n),
+  serpMicros: bigint("serp_micros", { mode: "bigint" }).notNull().default(0n),
+  reservedMicros: bigint("reserved_micros", { mode: "bigint" }).notNull().default(0n),
+  geminiCalls: integer("gemini_calls").notNull().default(0),
+  rerLaunches: integer("rer_launches").notNull().default(0),
+  coaCalls: integer("coa_calls").notNull().default(0),
+  serpSearches: integer("serp_searches").notNull().default(0),
+  urlFetches: integer("url_fetches").notNull().default(0),
+  estimatedInputTokens: integer("estimated_input_tokens").notNull().default(0),
+  estimatedOutputTokens: integer("estimated_output_tokens").notNull().default(0),
+  estimatedThinkingTokens: integer("estimated_thinking_tokens").notNull().default(0),
+  actualInputTokens: integer("actual_input_tokens").notNull().default(0),
+  actualOutputTokens: integer("actual_output_tokens").notNull().default(0),
+  actualThinkingTokens: integer("actual_thinking_tokens").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  usageLedgerUidDateUnique: uniqueIndex("usage_ledger_uid_date_unique").on(t.uid, t.usageDate),
+}));
+
+export const budgetReservations = pgTable("budget_reservations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  uid: varchar("uid").notNull(),
+  provider: varchar("provider").notNull(),
+  operationType: varchar("operation_type").notNull(),
+  estimatedMicros: bigint("estimated_micros", { mode: "bigint" }).notNull(),
+  actualMicros: bigint("actual_micros", { mode: "bigint" }),
+  status: varchar("status").notNull().default("active"), // active | settled | released
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  settledAt: timestamp("settled_at"),
+  releasedAt: timestamp("released_at"),
+});
+
 export const insertMissionSchema = createInsertSchema(missions).omit({ id: true, createdAt: true, updatedAt: true, completedAt: true });
 export const insertTaskSchema = createInsertSchema(tasks).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertMemoryEntrySchema = createInsertSchema(memoryEntries).omit({ id: true, createdAt: true, updatedAt: true });
@@ -161,6 +202,8 @@ export type Task = typeof tasks.$inferSelect;
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type MemoryEntry = typeof memoryEntries.$inferSelect;
 export type InsertMemoryEntry = z.infer<typeof insertMemoryEntrySchema>;
+export type UsageLedger = typeof usageLedger.$inferSelect;
+export type BudgetReservation = typeof budgetReservations.$inferSelect;
 
 export const TAB_ROLES = ["researcher", "reviewer", "enhancer", "reporter"] as const;
 export type TabRole = typeof TAB_ROLES[number];

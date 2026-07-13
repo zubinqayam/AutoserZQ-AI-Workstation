@@ -1,7 +1,41 @@
 import { GoogleGenAI } from "@google/genai";
 import { createHash, randomUUID } from "crypto";
+import { getExecutionConfig } from "./core/executionConfig";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const executionConfig = getExecutionConfig();
+const pipelineMaxConcurrency = Math.max(1, Number.parseInt(process.env.GEMINI_PIPELINE_MAX_CONCURRENCY || "2", 10) || 2);
+
+class Semaphore {
+  private active = 0;
+  private queue: Array<() => void> = [];
+  constructor(private readonly limit: number) {}
+
+  async acquire(): Promise<() => void> {
+    await new Promise<void>((resolve) => {
+      if (this.active < this.limit) {
+        this.active += 1;
+        resolve();
+      } else {
+        this.queue.push(() => {
+          this.active += 1;
+          resolve();
+        });
+      }
+    });
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active = Math.max(0, this.active - 1);
+      const next = this.queue.shift();
+      if (next) next();
+    };
+  }
+}
+
+const pipelineGeminiSemaphore = new Semaphore(pipelineMaxConcurrency);
 
 // SHA-256 hex digest of a string. Used to fingerprint RER checkpoint output so
 // resume-after-crash can detect corrupted/truncated rows before trusting them.
@@ -532,18 +566,25 @@ export async function runTabCycle(
     userContent = `Research Topic: **${topic}**\n\n${"=".repeat(60)}\nREPORT RECEIVED FROM PREVIOUS TAB:\n${"=".repeat(60)}\n\n${receivedReport}\n\n${"=".repeat(60)}\n\nNow run your full 4-step cycle (Review the above → Deep Research → Enhance → Produce your Report).`;
   }
 
-  const response = await callGeminiWithRetry(
-    () =>
-      ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        config: {
-          systemInstruction: systemPrompt,
-          thinkingConfig: { thinkingBudget: 10000 },
-        },
-        contents: [{ role: "user", parts: [{ text: userContent }] }],
-      }),
-    { label: `tab${tabNumber}-cycle`, traceId }
-  );
+  const release = await pipelineGeminiSemaphore.acquire();
+  let response: any;
+  try {
+    response = await callGeminiWithRetry(
+      () =>
+        ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          config: {
+            systemInstruction: systemPrompt,
+            thinkingConfig: { thinkingBudget: executionConfig.rerTabCycle.thinkingBudget },
+            maxOutputTokens: executionConfig.rerTabCycle.maxOutputTokens,
+          },
+          contents: [{ role: "user", parts: [{ text: userContent }] }],
+        }),
+      { label: `tab${tabNumber}-cycle`, traceId }
+    );
+  } finally {
+    release();
+  }
 
   return response.text || "Agent produced no output.";
 }
@@ -669,7 +710,11 @@ You are responding as ${agent.name} inside the ZQ Cognitive Overlay Agent panel.
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
-    config: { systemInstruction: systemPrompt },
+    config: {
+      systemInstruction: systemPrompt,
+      thinkingConfig: { thinkingBudget: executionConfig.coa.thinkingBudget },
+      maxOutputTokens: executionConfig.coa.maxOutputTokens,
+    },
     contents: formatted,
   });
 
@@ -765,7 +810,11 @@ export async function generateCOAResponse(
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
-    config: { systemInstruction: systemWithContext },
+    config: {
+      systemInstruction: systemWithContext,
+      thinkingConfig: { thinkingBudget: executionConfig.coa.thinkingBudget },
+      maxOutputTokens: executionConfig.coa.maxOutputTokens,
+    },
     contents: formatted,
   });
 
@@ -780,7 +829,11 @@ export async function generateResearchResponse(messages: ChatMessage[]): Promise
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
-    config: { systemInstruction: SUPERVISOR_PROMPT },
+    config: {
+      systemInstruction: SUPERVISOR_PROMPT,
+      thinkingConfig: { thinkingBudget: executionConfig.supervisor.thinkingBudget },
+      maxOutputTokens: executionConfig.supervisor.maxOutputTokens,
+    },
     contents: formatted,
   });
 

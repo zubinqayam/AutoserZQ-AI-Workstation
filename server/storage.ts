@@ -14,6 +14,7 @@ import {
 import { randomUUID, createHash } from "crypto";
 import { db } from "./db";
 import { eq, and, asc, desc } from "drizzle-orm";
+import { budgetLedger } from "./core/budgetLedger";
 
 // ── User types — persisted in Postgres so accounts survive restarts/redeploys ─
 export interface AppUser {
@@ -75,7 +76,7 @@ export interface IStorage {
 // ── Postgres-backed storage ───────────────────────────────────────────────────
 // Rooms, members, chat, workspace (room) state, and the RER pipeline are all
 // persisted so the workstation survives refresh, reconnect, and redeploy.
-// (Daily rate-limit counters remain in-memory — they reset every day anyway.)
+// (Daily usage counters and budget ledgers are persisted in Postgres.)
 export class DatabaseStorage implements IStorage {
   // ── User auth ───────────────────────────────────────────────────────────────
   async createUser(email: string, displayName: string, password: string) {
@@ -382,27 +383,31 @@ export class DatabaseStorage implements IStorage {
     await db.delete(memoryEntries).where(and(...conds));
   }
 
-  // ── Rate limiting per user (daily, in-memory — resets each day) ──────────────
-  private usageCounters = new Map<string, { date: string; geminiCalls: number; rerLaunches: number; coaCalls: number; resetAt: string }>();
-
   async getUsage(uid: string) {
-    const today = new Date().toISOString().slice(0, 10);
-    const key = `${uid}:${today}`;
-    let u = this.usageCounters.get(key);
-    if (!u || u.resetAt !== today) {
-      u = { date: today, geminiCalls: 0, rerLaunches: 0, coaCalls: 0, resetAt: today };
-      this.usageCounters.set(key, u);
-    }
-    return u;
+    const snapshot = await budgetLedger.getUsageForDate(uid);
+    return {
+      date: snapshot.date,
+      geminiCalls: snapshot.geminiCalls,
+      rerLaunches: snapshot.rerLaunches,
+      coaCalls: snapshot.coaCalls,
+      serpSearches: snapshot.serpSearches,
+      urlFetches: snapshot.urlFetches,
+      estimatedInputTokens: snapshot.estimatedInputTokens,
+      estimatedOutputTokens: snapshot.estimatedOutputTokens,
+      estimatedThinkingTokens: snapshot.estimatedThinkingTokens,
+      actualInputTokens: snapshot.actualInputTokens,
+      actualOutputTokens: snapshot.actualOutputTokens,
+      actualThinkingTokens: snapshot.actualThinkingTokens,
+      resetAt: snapshot.date,
+    };
   }
 
-  async incrementUsage(uid: string, field: "geminiCalls" | "rerLaunches" | "coaCalls") {
-    const today = new Date().toISOString().slice(0, 10);
-    const key = `${uid}:${today}`;
-    const u = await this.getUsage(uid);
-    u[field] += 1;
-    this.usageCounters.set(key, u);
-    return u;
+  async incrementUsage(
+    uid: string,
+    field: "geminiCalls" | "rerLaunches" | "coaCalls" | "serpSearches" | "urlFetches"
+  ) {
+    await budgetLedger.incrementUsage(uid, { counter: field });
+    return this.getUsage(uid);
   }
 
   // ── Commercial tier ─────────────────────────────────────────────────────────
