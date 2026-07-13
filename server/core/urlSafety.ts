@@ -108,11 +108,12 @@ export async function fetchWithRedirectValidation(
   const redirects: string[] = [];
 
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    const safeCurrentUrl = await validateOutboundUrl(currentUrl.toString());
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), opts.timeoutMs);
     let response: Response;
     try {
-      response = await fetch(currentUrl.toString(), {
+      response = await fetch(safeCurrentUrl.toString(), {
         method: "GET",
         redirect: "manual",
         signal: controller.signal,

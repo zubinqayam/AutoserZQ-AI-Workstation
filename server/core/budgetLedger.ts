@@ -181,7 +181,12 @@ class BudgetLedger {
   async settleReservation(reservationId: string, actualMicros: bigint, usage?: UsageIncrement): Promise<void> {
     const { date, month } = toDateParts();
     await db.transaction(async (tx) => {
-      const lockRows = await tx.execute(sql`SELECT * FROM budget_reservations WHERE id = ${reservationId} FOR UPDATE`);
+      const lockRows = await tx.execute(sql`
+        SELECT id, uid, provider, status, estimated_micros
+        FROM budget_reservations
+        WHERE id = ${reservationId}
+        FOR UPDATE
+      `);
       const reservation = (lockRows as any).rows?.[0];
       if (!reservation || reservation.status !== "active") return;
 
@@ -222,7 +227,12 @@ class BudgetLedger {
   async releaseReservation(reservationId: string, errorMessage?: string): Promise<void> {
     const { date, month } = toDateParts();
     await db.transaction(async (tx) => {
-      const lockRows = await tx.execute(sql`SELECT * FROM budget_reservations WHERE id = ${reservationId} FOR UPDATE`);
+      const lockRows = await tx.execute(sql`
+        SELECT id, uid, status, estimated_micros
+        FROM budget_reservations
+        WHERE id = ${reservationId}
+        FOR UPDATE
+      `);
       const reservation = (lockRows as any).rows?.[0];
       if (!reservation || reservation.status !== "active") return;
 

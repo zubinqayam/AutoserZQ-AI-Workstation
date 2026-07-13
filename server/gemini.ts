@@ -4,7 +4,10 @@ import { getExecutionConfig } from "./core/executionConfig";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 const executionConfig = getExecutionConfig();
-const pipelineMaxConcurrency = Math.max(1, Number.parseInt(process.env.GEMINI_PIPELINE_MAX_CONCURRENCY || "2", 10) || 2);
+const parsedPipelineConcurrency = Number.parseInt(process.env.GEMINI_PIPELINE_MAX_CONCURRENCY || "2", 10);
+const pipelineMaxConcurrency = Number.isFinite(parsedPipelineConcurrency) && parsedPipelineConcurrency > 0
+  ? parsedPipelineConcurrency
+  : 2;
 
 class Semaphore {
   private active = 0;
