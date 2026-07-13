@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean, integer, jsonb, uniqueIndex, date, bigint } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, boolean, integer, jsonb, uniqueIndex, index, date, bigint } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -192,9 +192,29 @@ export const budgetReservations = pgTable("budget_reservations", {
   releasedAt: timestamp("released_at"),
 });
 
+
+export const evidenceCaptures = pgTable("evidence_captures", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  roomId: varchar("room_id").notNull(),
+  missionId: varchar("mission_id"),
+  panelId: varchar("panel_id").notNull(),
+  sourceUrl: text("source_url").notNull(),
+  captureTimestamp: timestamp("capture_timestamp").notNull(),
+  title: text("title"),
+  label: text("label"),
+  contentExcerpt: text("content_excerpt"),
+  contentHash: varchar("content_hash"),
+  screenshotRef: text("screenshot_ref"),
+  createdByUid: varchar("created_by_uid").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => ({
+  evidenceRoomCreatedIdx: index("evidence_captures_room_id_created_at_idx").on(t.roomId, t.createdAt),
+}));
+
 export const insertMissionSchema = createInsertSchema(missions).omit({ id: true, createdAt: true, updatedAt: true, completedAt: true });
 export const insertTaskSchema = createInsertSchema(tasks).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertMemoryEntrySchema = createInsertSchema(memoryEntries).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertEvidenceCaptureSchema = createInsertSchema(evidenceCaptures).omit({ id: true, createdAt: true });
 
 export type Mission = typeof missions.$inferSelect;
 export type InsertMission = z.infer<typeof insertMissionSchema>;
@@ -204,6 +224,8 @@ export type MemoryEntry = typeof memoryEntries.$inferSelect;
 export type InsertMemoryEntry = z.infer<typeof insertMemoryEntrySchema>;
 export type UsageLedger = typeof usageLedger.$inferSelect;
 export type BudgetReservation = typeof budgetReservations.$inferSelect;
+export type EvidenceCapture = typeof evidenceCaptures.$inferSelect;
+export type InsertEvidenceCapture = z.infer<typeof insertEvidenceCaptureSchema>;
 
 export const TAB_ROLES = ["researcher", "reviewer", "enhancer", "reporter"] as const;
 export type TabRole = typeof TAB_ROLES[number];

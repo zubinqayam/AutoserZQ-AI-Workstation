@@ -45,3 +45,25 @@ CREATE TABLE IF NOT EXISTS budget_reservations (
 
 CREATE INDEX IF NOT EXISTS budget_reservations_uid_status_idx
   ON budget_reservations (uid, status);
+
+CREATE TABLE IF NOT EXISTS evidence_captures (
+  id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id varchar NOT NULL,
+  mission_id varchar,
+  panel_id varchar NOT NULL,
+  source_url text NOT NULL,
+  capture_timestamp timestamp NOT NULL,
+  title text,
+  label text,
+  content_excerpt text,
+  content_hash varchar,
+  screenshot_ref text,
+  created_by_uid varchar NOT NULL,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS evidence_captures_room_id_created_at_idx
+  ON evidence_captures (room_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS evidence_captures_created_by_uid_idx
+  ON evidence_captures (created_by_uid);

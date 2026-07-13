@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { runTabCycle, generateResearchResponse, generateCOAResponse, generateCOAMultiAgentResponse, computeChecksum, getCachedGeminiHealth, startGeminiHealthMonitor } from "./gemini";
 import { z } from "zod";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { TAB_ROLES, insertRoomSchema } from "@shared/schema";
 import { eventBus } from "./core/eventBus";
 import { missionManager } from "./core/missionManager";
@@ -205,6 +205,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     next();
   };
 
+  const requireRoomMember = async (roomId: string, uid: string) => {
+    const room = await storage.getRoom(roomId);
+    if (!room) return false;
+    if (room.ownerUid === uid) return true;
+    return Boolean(await storage.getMember(roomId, uid));
+  };
+
   const checkRateLimit = (
     field: "geminiCalls" | "rerLaunches" | "coaCalls" | "serpSearches" | "urlFetches",
     opts: { increment?: "before" | "after" } = { increment: "before" }
@@ -246,7 +253,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
       const sanitized = sanitizeChatMessages(messages);
       if (sanitized.length === 0) return res.status(400).json({ error: "messages must not be empty after sanitization" });
-      res.json({ text: await generateResearchResponse(sanitized) });
+      res.json({ text: await generateResearchResponse(sanitized, (req as any).user.id) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "AI unavailable" });
     }
@@ -289,6 +296,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
       budgetUtilizationPercent: utilization,
       zeroPaidSpendMode: budgetConfig.zeroPaidSpendMode,
     });
+  });
+
+
+
+  // Conference Room evidence API. Iframe-tier captures persist truthful metadata
+  // only; cross-origin page content/screenshots are not fabricated.
+  const evidenceBodySchema = z.object({
+    missionId: z.string().optional().nullable(),
+    panelId: z.string().min(1).max(32),
+    sourceUrl: z.string().url(),
+    title: z.string().max(300).optional().nullable(),
+    label: z.string().max(120).optional().nullable(),
+    contentExcerpt: z.string().max(4000).optional().nullable(),
+    screenshotRef: z.string().max(1000).optional().nullable(),
+  });
+
+  app.get("/api/room/:roomId/evidence", requireAuth, async (req: any, res) => {
+    const uid = req.user.id;
+    if (!(await requireRoomMember(req.params.roomId, uid))) return res.status(403).json({ error: "Room access denied" });
+    res.json(await storage.listEvidenceCaptures(req.params.roomId));
+  });
+
+  app.post("/api/room/:roomId/evidence", requireAuth, async (req: any, res) => {
+    const uid = req.user.id;
+    if (!(await requireRoomMember(req.params.roomId, uid))) return res.status(403).json({ error: "Room access denied" });
+    const parsed = evidenceBodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0]?.message || "Invalid evidence" });
+    const contentHash = parsed.data.contentExcerpt
+      ? createHash("sha256").update(parsed.data.contentExcerpt).digest("hex")
+      : null;
+    const capture = await storage.createEvidenceCapture({
+      roomId: req.params.roomId,
+      missionId: parsed.data.missionId ?? null,
+      panelId: parsed.data.panelId,
+      sourceUrl: parsed.data.sourceUrl,
+      captureTimestamp: new Date(),
+      title: parsed.data.title ?? null,
+      label: parsed.data.label ?? null,
+      contentExcerpt: parsed.data.contentExcerpt ?? null,
+      contentHash,
+      screenshotRef: parsed.data.screenshotRef ?? null,
+      createdByUid: uid,
+    });
+    eventBus.publish("evidence.captured", req.params.roomId, { id: capture.id, uid, panelId: capture.panelId });
+    res.status(201).json(capture);
+  });
+
+  app.get("/api/evidence/:id", requireAuth, async (req: any, res) => {
+    const capture = await storage.getEvidenceCapture(req.params.id);
+    if (!capture) return res.status(404).json({ error: "Evidence not found" });
+    if (!(await requireRoomMember(capture.roomId, req.user.id))) return res.status(403).json({ error: "Evidence access denied" });
+    res.json(capture);
+  });
+
+  app.delete("/api/evidence/:id", requireAuth, async (req: any, res) => {
+    const capture = await storage.getEvidenceCapture(req.params.id);
+    if (!capture) return res.status(404).json({ error: "Evidence not found" });
+    const room = await storage.getRoom(capture.roomId);
+    if (capture.createdByUid !== req.user.id && room?.ownerUid !== req.user.id) return res.status(403).json({ error: "Evidence delete denied" });
+    await storage.deleteEvidenceCapture(req.params.id);
+    eventBus.publish("evidence.deleted", capture.roomId, { id: capture.id, uid: req.user.id });
+    res.status(204).end();
   });
 
   // ZQ COA (Cognitive Overlay Agent) chat
@@ -471,7 +540,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const sanitized = sanitizeChatMessages(messages);
       if (sanitized.length === 0) return res.status(400).json({ error: "messages must not be empty after sanitization" });
       const context = await mergeAgentContext(roomId, workspaceContext);
-      res.json({ text: await generateCOAResponse(sanitized, context) });
+      res.json({ text: await generateCOAResponse(sanitized, context, (req as any).user.id) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "COA unavailable" });
     }
@@ -486,7 +555,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (sanitizedMessage.length === 0) return res.status(400).json({ error: "message must not be empty after sanitization" });
       const sanitizedHistory = sanitizeChatMessages(Array.isArray(history) ? history : []);
       const ctx = await mergeAgentContext(roomId, workspaceContext);
-      const responses = await generateCOAMultiAgentResponse(sanitizedMessage, sanitizedHistory, ctx);
+      const responses = await generateCOAMultiAgentResponse(sanitizedMessage, sanitizedHistory, ctx, (req as any).user.id);
       res.json({ responses });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Multi-agent unavailable" });
@@ -555,9 +624,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Run pipeline async
       if (mode === "sequential") {
-        runSequentialPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast);
+        runSequentialPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast, (req as any).user.id);
       } else {
-        runParallelPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast);
+        runParallelPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast, (req as any).user.id);
       }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -814,9 +883,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 // ─── SEQUENTIAL: Tab1 → Tab2 → Tab3 → Tab4, each gets previous tab's full report ───
 async function runSequentialPipeline(
   taskId: string, roomId: string, topic: string,
-  outputIds: string[], broadcast: (m: any) => void
+  outputIds: string[], broadcast: (m: any) => void, uid?: string
 ) {
-  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, 0, null, broadcast);
+  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, 0, null, broadcast, uid);
 }
 
 // Resume a sequential RER pipeline after a crash. `startIndex` is the tab
@@ -825,15 +894,15 @@ async function runSequentialPipeline(
 async function resumeSequentialPipeline(
   taskId: string, roomId: string, topic: string,
   outputIds: string[], startIndex: number, previousReportSeed: string | null,
-  broadcast: (m: any) => void
+  broadcast: (m: any) => void, uid?: string
 ) {
-  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, startIndex, previousReportSeed, broadcast);
+  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, startIndex, previousReportSeed, broadcast, uid);
 }
 
 async function sequentialPipelineLoop(
   taskId: string, roomId: string, topic: string,
   outputIds: string[], startIndex: number, previousReportSeed: string | null,
-  broadcast: (m: any) => void
+  broadcast: (m: any) => void, uid?: string
 ) {
   let previousReport: string | null = previousReportSeed;
 
@@ -852,7 +921,7 @@ async function sequentialPipelineLoop(
 
     try {
       // Each tab gets the PREVIOUS tab's full report as input
-      const result = await runTabCycle(tabNumber, topic, previousReport, taskId);
+      const result = await runTabCycle(tabNumber, topic, previousReport, taskId, uid);
 
       await storage.updateRerAgentOutput(outputId, { status: "done", output: result, checkpointHash: computeChecksum(result) });
       await storage.updateRerTask(taskId, { currentStep: i + 1 });
@@ -880,7 +949,7 @@ async function sequentialPipelineLoop(
 // ─── PARALLEL: All 4 tabs run simultaneously on topic, then do cross-enhancement ───
 async function runParallelPipeline(
   taskId: string, roomId: string, topic: string,
-  outputIds: string[], broadcast: (m: any) => void
+  outputIds: string[], broadcast: (m: any) => void, uid?: string
 ) {
   // Round 1: All tabs research the topic independently
   await Promise.all(outputIds.map(id =>
@@ -890,7 +959,7 @@ async function runParallelPipeline(
   await broadcastState(taskId, broadcast);
 
   const round1 = await Promise.allSettled(
-    [1, 2, 3, 4].map(tabNum => runTabCycle(tabNum, topic, null, taskId))
+    [1, 2, 3, 4].map(tabNum => runTabCycle(tabNum, topic, null, taskId, uid))
   );
 
   const round1Results: (string | null)[] = [];
@@ -924,7 +993,7 @@ async function runParallelPipeline(
 
   const round2 = await Promise.allSettled(
     [1, 2, 3, 4].map(tabNum =>
-      runTabCycle(tabNum, topic, combinedContext, taskId)
+      runTabCycle(tabNum, topic, combinedContext, taskId, uid)
     )
   );
 

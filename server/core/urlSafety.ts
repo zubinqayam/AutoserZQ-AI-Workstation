@@ -3,6 +3,15 @@ import { isIP } from "net";
 
 const MAX_REDIRECTS = 3;
 
+const hasSuspiciousNumericHostname = (host: string) => {
+  const normalized = host.toLowerCase();
+  return (
+    /^0x[0-9a-f]+$/.test(normalized) ||
+    /^0[0-7]+(?:\.0[0-7]+){0,3}$/.test(normalized) ||
+    /^\d+$/.test(normalized)
+  );
+};
+
 const isLocalHostname = (host: string) => {
   const normalized = host.toLowerCase();
   return normalized === "localhost" || normalized.endsWith(".localhost") || normalized.endsWith(".local");
@@ -75,7 +84,9 @@ export async function validateOutboundUrl(rawUrl: string): Promise<URL> {
     throw new Error("Malformed URL.");
   }
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http/https URLs are allowed.");
+  if (parsed.username || parsed.password) throw new Error("Credentials in URLs are not allowed.");
   if (!parsed.hostname) throw new Error("Hostname is required.");
+  if (hasSuspiciousNumericHostname(parsed.hostname)) throw new Error("Ambiguous numeric hostnames are not allowed.");
   if (isLocalHostname(parsed.hostname) || isMetadataHost(parsed.hostname)) throw new Error("Target host is not allowed.");
 
   await assertHostResolvesToPublicNetwork(parsed.hostname);
@@ -84,7 +95,7 @@ export async function validateOutboundUrl(rawUrl: string): Promise<URL> {
 
 export async function assertHostResolvesToPublicNetwork(hostname: string): Promise<void> {
   const host = hostname.toLowerCase();
-  if (isLocalHostname(host) || isMetadataHost(host)) throw new Error("Target host is not allowed.");
+  if (isLocalHostname(host) || isMetadataHost(host) || hasSuspiciousNumericHostname(host)) throw new Error("Target host is not allowed.");
   const directIpFamily = isIP(host);
   if (directIpFamily === 4 && isBlockedIpv4(host)) throw new Error("Target host resolves to a blocked IPv4 range.");
   if (directIpFamily === 6 && isBlockedIpv6(host)) throw new Error("Target host resolves to a blocked IPv6 range.");
