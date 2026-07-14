@@ -784,10 +784,13 @@ interface BrowserTab {
 
 interface EvidenceCapture {
   id: string;
-  panel: number;
-  url: string;
-  timestamp: string;
-  label: string;
+  panelId?: string;
+  panel?: number;
+  sourceUrl?: string;
+  url?: string;
+  captureTimestamp?: string;
+  timestamp?: string;
+  label?: string | null;
 }
 
 function toUrl(raw: string, engine = "bing"): string {
@@ -808,6 +811,8 @@ function statusColor(s: string) {
 }
 
 function ConferenceRoomBrowserView() {
+  const roomId = useMemo(() => new URLSearchParams(window.location.search).get("room") || "zq-demo", []);
+  const uid = useMemo(() => localStorage.getItem("zq_uid") || "", []);
   const [tabs, setTabs] = useState<BrowserTab[]>(
     TAB_DEFAULTS.map(d => ({ ...d, inputUrl: d.url, history: [d.url], histIdx: 0, loading: false, status: "Ready", blocked: false }))
   );
@@ -910,15 +915,36 @@ function ConferenceRoomBrowserView() {
     });
   }, [tabs, log]);
 
-  const captureEvidence = (i: number) => {
-    setEvidence(prev => [{
+  const loadEvidence = useCallback(async () => {
+    if (!uid) return;
+    const res = await fetch(`/api/room/${encodeURIComponent(roomId)}/evidence`, { headers: { "x-uid": uid } });
+    if (res.ok) setEvidence(await res.json());
+  }, [roomId, uid]);
+
+  useEffect(() => { loadEvidence().catch(() => undefined); }, [loadEvidence]);
+
+  const captureEvidence = async (i: number) => {
+    const fallback = {
       id: Date.now().toString(),
       panel: i + 1,
       url: tabs[i].url,
       timestamp: new Date().toLocaleString(),
       label: tabs[i].label,
-    }, ...prev].slice(0, 100));
+    };
     setShowEvidence(true);
+    if (!uid) {
+      setEvidence(prev => [fallback, ...prev].slice(0, 100));
+      return;
+    }
+    const res = await fetch(`/api/room/${encodeURIComponent(roomId)}/evidence`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-uid": uid },
+      body: JSON.stringify({ panelId: `browser-${i + 1}`, sourceUrl: tabs[i].url, title: tabs[i].label, label: tabs[i].label }),
+    });
+    if (res.ok) {
+      const saved = await res.json();
+      setEvidence(prev => [saved, ...prev].slice(0, 100));
+    } else setEvidence(prev => [fallback, ...prev].slice(0, 100));
   };
 
   const focusPanel = (i: number, mode: ViewMode = "focus") => {
@@ -1040,9 +1066,9 @@ function ConferenceRoomBrowserView() {
             ? <p className="text-[9px] text-muted-foreground/30">Click the camera icon on any panel to capture URL + timestamp as evidence.</p>
             : evidence.map(ev => (
               <div key={ev.id} className="text-[9px] font-mono flex gap-2 text-muted-foreground">
-                <span style={{ color: COLOR_HEX[ev.panel - 1] }}>B{ev.panel}</span>
-                <span className="text-muted-foreground/50 flex-shrink-0">{ev.timestamp}</span>
-                <span className="truncate">{ev.url}</span>
+                <span style={{ color: COLOR_HEX[((ev.panel ?? Number(String(ev.panelId || "1").replace(/\D/g, ""))) || 1) - 1] }}>B{ev.panel ?? String(ev.panelId || "browser-1").replace(/\D/g, "")}</span>
+                <span className="text-muted-foreground/50 flex-shrink-0">{ev.timestamp ?? (ev.captureTimestamp ? new Date(ev.captureTimestamp).toLocaleString() : "")}</span>
+                <span className="truncate">{ev.url ?? ev.sourceUrl}</span>
               </div>
             ))}
         </div>

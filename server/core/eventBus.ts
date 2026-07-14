@@ -17,6 +17,7 @@ export type ZQEventType =
   | "task.failed"
   | "workspace.updated"
   | "evidence.captured"
+  | "evidence.deleted"
   | "browser.event"
   | "budget.usage"
   | "budget.reserved"

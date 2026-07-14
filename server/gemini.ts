@@ -1,6 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { createHash, randomUUID } from "crypto";
 import { getExecutionConfig } from "./core/executionConfig";
+import { budgetConfig } from "./core/budgetConfig";
+import { estimateGeminiTokens, extractGeminiUsageMetadata } from "./core/costEstimator";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 const executionConfig = getExecutionConfig();
@@ -39,6 +41,52 @@ class Semaphore {
 }
 
 const pipelineGeminiSemaphore = new Semaphore(pipelineMaxConcurrency);
+
+async function governedGeminiGenerate(params: any, governance: { uid?: string; operationType: string; inputText: string; maxOutputTokens: number; thinkingBudget: number; traceId?: string }) {
+  if (budgetConfig.emergencyKillSwitch) throw new Error("Paid operations are administratively disabled.");
+  if (budgetConfig.zeroPaidSpendMode) throw new Error("Zero-paid-spend mode is enabled.");
+  const estimate = estimateGeminiTokens({
+    inputText: governance.inputText,
+    maxOutputTokens: governance.maxOutputTokens,
+    thinkingBudget: governance.thinkingBudget,
+    model: params.model,
+  });
+  let reservationId: string | undefined;
+  let budgetLedger: (typeof import("./core/budgetLedger"))["budgetLedger"] | undefined;
+  if (governance.uid) {
+    ({ budgetLedger } = await import("./core/budgetLedger"));
+    const reserve = await budgetLedger.reserveBudget({
+      uid: governance.uid,
+      provider: "gemini",
+      operationType: governance.operationType,
+      estimatedMicros: estimate.estimatedCostMicros,
+      monthlyCeilingMicros: budgetConfig.monthlyCeilingMicros,
+    });
+    if (!reserve.allowed) throw new Error(reserve.reason || "Budget reservation denied");
+    reservationId = reserve.reservationId;
+    await budgetLedger.incrementUsage(governance.uid, {
+      estimatedInputTokens: estimate.estimatedInputTokens,
+      estimatedOutputTokens: estimate.estimatedOutputTokens,
+      estimatedThinkingTokens: estimate.estimatedThinkingTokens,
+    });
+  }
+  try {
+    const response = await ai.models.generateContent(params);
+    if (reservationId && budgetLedger) {
+      const actual = extractGeminiUsageMetadata(response);
+      await budgetLedger.settleReservation(reservationId, BigInt(0), {
+        actualInputTokens: actual.inputTokens,
+        actualOutputTokens: actual.outputTokens,
+        actualThinkingTokens: actual.thinkingTokens,
+      });
+    }
+    return response;
+  } catch (err: any) {
+    if (reservationId && budgetLedger) await budgetLedger.releaseReservation(reservationId, err?.message || "gemini_failed");
+    throw err;
+  }
+}
+
 
 // SHA-256 hex digest of a string. Used to fingerprint RER checkpoint output so
 // resume-after-crash can detect corrupted/truncated rows before trusting them.
@@ -558,7 +606,8 @@ export async function runTabCycle(
   tabNumber: number,
   topic: string,
   receivedReport: string | null,
-  traceId?: string
+  traceId?: string,
+  uid?: string
 ): Promise<string> {
   const systemPrompt = TAB_SYSTEM_PROMPTS[tabNumber] || TAB_SYSTEM_PROMPTS[1];
 
@@ -574,7 +623,7 @@ export async function runTabCycle(
   try {
     response = await callGeminiWithRetry(
       () =>
-        ai.models.generateContent({
+        governedGeminiGenerate({
           model: "gemini-2.5-flash",
           config: {
             systemInstruction: systemPrompt,
@@ -582,7 +631,8 @@ export async function runTabCycle(
             maxOutputTokens: executionConfig.rerTabCycle.maxOutputTokens,
           },
           contents: [{ role: "user", parts: [{ text: userContent }] }],
-        }),
+        }, { uid, operationType: "rer-tab-cycle", inputText: `${systemPrompt}
+${userContent}`, maxOutputTokens: executionConfig.rerTabCycle.maxOutputTokens, thinkingBudget: executionConfig.rerTabCycle.thinkingBudget, traceId }),
       { label: `tab${tabNumber}-cycle`, traceId }
     );
   } finally {
@@ -693,7 +743,8 @@ When a user reports something "not working," first check if it matches one of th
 export async function generateCOAAgentResponse(
   agentId: COAAgentId,
   messages: ChatMessage[],
-  workspaceContext: string
+  workspaceContext: string,
+  uid?: string
 ): Promise<string> {
   const agent = COA_AGENTS[agentId];
   const systemPrompt = `${agent.prompt}
@@ -711,7 +762,7 @@ You are responding as ${agent.name} inside the ZQ Cognitive Overlay Agent panel.
     parts: [{ text: m.content }],
   }));
 
-  const response = await ai.models.generateContent({
+  const response = await governedGeminiGenerate({
     model: "gemini-2.5-flash",
     config: {
       systemInstruction: systemPrompt,
@@ -719,7 +770,8 @@ You are responding as ${agent.name} inside the ZQ Cognitive Overlay Agent panel.
       maxOutputTokens: executionConfig.coa.maxOutputTokens,
     },
     contents: formatted,
-  });
+  }, { uid, operationType: "coa-agent", inputText: `${systemPrompt}
+${messages.map(m => m.content).join("\n")}`, maxOutputTokens: executionConfig.coa.maxOutputTokens, thinkingBudget: executionConfig.coa.thinkingBudget });
 
   return response.text || "...";
 }
@@ -728,7 +780,8 @@ You are responding as ${agent.name} inside the ZQ Cognitive Overlay Agent panel.
 export async function generateCOAMultiAgentResponse(
   message: string,
   conversationHistory: ChatMessage[],
-  workspaceContext: string
+  workspaceContext: string,
+  uid?: string
 ): Promise<{ agentId: COAAgentId; text: string }[]> {
   // Determine which agents should respond based on keywords
   const msg = message.toLowerCase();
@@ -758,7 +811,7 @@ export async function generateCOAMultiAgentResponse(
   const userMsg: ChatMessage = { role: "user", content: message };
 
   const results = await Promise.allSettled(
-    selectedAgents.map(id => generateCOAAgentResponse(id, [...history, userMsg], workspaceContext))
+    selectedAgents.map(id => generateCOAAgentResponse(id, [...history, userMsg], workspaceContext, uid))
   );
 
   return selectedAgents.map((id, i) => ({
@@ -802,7 +855,8 @@ Special capabilities the user can invoke:
 
 export async function generateCOAResponse(
   messages: ChatMessage[],
-  workspaceContext: string
+  workspaceContext: string,
+  uid?: string
 ): Promise<string> {
   const systemWithContext = `${COA_SYSTEM_PROMPT}\n\n=== CURRENT WORKSPACE STATE ===\n${workspaceContext}\n=== END WORKSPACE STATE ===`;
 
@@ -811,7 +865,7 @@ export async function generateCOAResponse(
     parts: [{ text: m.content }],
   }));
 
-  const response = await ai.models.generateContent({
+  const response = await governedGeminiGenerate({
     model: "gemini-2.5-flash",
     config: {
       systemInstruction: systemWithContext,
@@ -819,18 +873,19 @@ export async function generateCOAResponse(
       maxOutputTokens: executionConfig.coa.maxOutputTokens,
     },
     contents: formatted,
-  });
+  }, { uid, operationType: "coa-chat", inputText: `${systemWithContext}
+${messages.map(m => m.content).join("\n")}`, maxOutputTokens: executionConfig.coa.maxOutputTokens, thinkingBudget: executionConfig.coa.thinkingBudget });
 
   return response.text || "...";
 }
 
-export async function generateResearchResponse(messages: ChatMessage[]): Promise<string> {
+export async function generateResearchResponse(messages: ChatMessage[], uid?: string): Promise<string> {
   const formatted = messages.map(m => ({
     role: m.role === "user" ? "user" : "model",
     parts: [{ text: m.content }],
   }));
 
-  const response = await ai.models.generateContent({
+  const response = await governedGeminiGenerate({
     model: "gemini-2.5-flash",
     config: {
       systemInstruction: SUPERVISOR_PROMPT,
@@ -838,7 +893,8 @@ export async function generateResearchResponse(messages: ChatMessage[]): Promise
       maxOutputTokens: executionConfig.supervisor.maxOutputTokens,
     },
     contents: formatted,
-  });
+  }, { uid, operationType: "supervisor-chat", inputText: `${SUPERVISOR_PROMPT}
+${messages.map(m => m.content).join("\n")}`, maxOutputTokens: executionConfig.supervisor.maxOutputTokens, thinkingBudget: executionConfig.supervisor.thinkingBudget });
 
   return response.text || "I couldn't generate a response.";
 }

@@ -235,12 +235,19 @@ async function main() {
   await check("validateOutboundUrl rejects localhost and loopback", async () => {
     await assert.rejects(validateOutboundUrl("http://localhost:8080"));
     await assert.rejects(validateOutboundUrl("http://127.0.0.1"));
+    await assert.rejects(validateOutboundUrl("http://[::1]"));
+    await assert.rejects(validateOutboundUrl("http://0.0.0.0"));
   });
 
   await check("validateOutboundUrl rejects private and metadata addresses", async () => {
     await assert.rejects(validateOutboundUrl("http://10.0.0.1"));
     await assert.rejects(validateOutboundUrl("http://192.168.1.1"));
     await assert.rejects(validateOutboundUrl("http://169.254.169.254/latest/meta-data"));
+    await assert.rejects(validateOutboundUrl("http://172.16.0.1"));
+    await assert.rejects(validateOutboundUrl("http://2130706433"));
+    await assert.rejects(validateOutboundUrl("http://0x7f000001"));
+    await assert.rejects(validateOutboundUrl("http://0177.0.0.1"));
+    await assert.rejects(validateOutboundUrl("http://user:pass@example.com"));
   });
 
   await check("execution config defaults RER thinking budget to 5000 and output to 4096", () => {

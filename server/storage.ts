@@ -7,9 +7,9 @@ import {
   type RerAgentOutput, type InsertRerAgentOutput,
   type Mission, type InsertMission,
   type Task, type InsertTask,
-  type MemoryEntry, type InsertMemoryEntry,
+  type MemoryEntry, type InsertMemoryEntry, type EvidenceCapture, type InsertEvidenceCapture,
   users, rooms, members, chatMessages, roomStates, rerTasks, rerAgentOutputs,
-  missions, tasks, memoryEntries,
+  missions, tasks, memoryEntries, evidenceCaptures,
 } from "@shared/schema";
 import { randomUUID, createHash } from "crypto";
 import { db } from "./db";
@@ -71,6 +71,10 @@ export interface IStorage {
   setMemory(input: InsertMemoryEntry): Promise<MemoryEntry>;
   getMemory(roomId: string, scope: string, scopeId?: string, key?: string): Promise<MemoryEntry[]>;
   deleteMemory(roomId: string, scope: string, scopeId?: string, key?: string): Promise<void>;
+  createEvidenceCapture(input: InsertEvidenceCapture): Promise<EvidenceCapture>;
+  listEvidenceCaptures(roomId: string): Promise<EvidenceCapture[]>;
+  getEvidenceCapture(id: string): Promise<EvidenceCapture | undefined>;
+  deleteEvidenceCapture(id: string): Promise<void>;
 }
 
 // ── Postgres-backed storage ───────────────────────────────────────────────────
@@ -408,6 +412,39 @@ export class DatabaseStorage implements IStorage {
   ) {
     await budgetLedger.incrementUsage(uid, { counter: field });
     return this.getUsage(uid);
+  }
+
+
+
+  // ── Evidence captures ─────────────────────────────────────────────────────
+  async createEvidenceCapture(input: InsertEvidenceCapture): Promise<EvidenceCapture> {
+    const [ev] = await db.insert(evidenceCaptures).values({
+      roomId: input.roomId,
+      missionId: input.missionId ?? null,
+      panelId: input.panelId,
+      sourceUrl: input.sourceUrl,
+      captureTimestamp: input.captureTimestamp,
+      title: input.title ?? null,
+      label: input.label ?? null,
+      contentExcerpt: input.contentExcerpt ?? null,
+      contentHash: input.contentHash ?? null,
+      screenshotRef: input.screenshotRef ?? null,
+      createdByUid: input.createdByUid,
+    }).returning();
+    return ev;
+  }
+
+  async listEvidenceCaptures(roomId: string): Promise<EvidenceCapture[]> {
+    return db.select().from(evidenceCaptures).where(eq(evidenceCaptures.roomId, roomId)).orderBy(desc(evidenceCaptures.createdAt));
+  }
+
+  async getEvidenceCapture(id: string): Promise<EvidenceCapture | undefined> {
+    const [ev] = await db.select().from(evidenceCaptures).where(eq(evidenceCaptures.id, id));
+    return ev;
+  }
+
+  async deleteEvidenceCapture(id: string): Promise<void> {
+    await db.delete(evidenceCaptures).where(eq(evidenceCaptures.id, id));
   }
 
   // ── Commercial tier ─────────────────────────────────────────────────────────
