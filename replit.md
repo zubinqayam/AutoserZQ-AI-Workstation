@@ -16,7 +16,7 @@ A 4-tab multi-agent research platform with the RER (Review → Enhance → Repor
 ## Architecture
 
 - **Frontend**: React + Vite + Tailwind + shadcn/ui + TanStack Query + wouter
-- **Backend**: Express + WebSocket (ws) + Postgres persistence (Drizzle ORM) for rooms, members, chat, workspace state, and the RER pipeline (daily rate-limit counters are in-memory)
+- **Backend**: Express + WebSocket (ws) + Postgres persistence (Drizzle ORM) for rooms, members, chat, workspace state, RER pipeline state, and persistent usage/budget ledgers
 - **AI**: Google Gemini 2.5 Flash via `@google/genai`
 - **Port**: 5000 (development and production)
 
@@ -31,12 +31,23 @@ A 4-tab multi-agent research platform with the RER (Review → Enhance → Repor
 ## Environment Variables
 
 - `GEMINI_API_KEY` — Google Gemini API key (required for AI features)
+- `SERPAPI_KEY` — SerpAPI key (required for `/api/serp/search`)
 - `SESSION_SECRET` — Session signing secret
 - `PORT` — Server port (default: 5000)
 - `GOOGLE_CLIENT_ID` — Google OAuth Client ID (optional, enables "Continue with Google")
 - `GOOGLE_CLIENT_SECRET` — Google OAuth Client Secret (optional)
 - `GITHUB_CLIENT_ID` — GitHub OAuth App Client ID (optional, enables "Continue with GitHub")
 - `GITHUB_CLIENT_SECRET` — GitHub OAuth App Client Secret (optional)
+- `EXECUTION_PROFILE` — Gemini execution profile (`ECONOMY|STANDARD|DEEP|CRITICAL`, default `STANDARD`)
+- `GEMINI_RER_THINKING_BUDGET` — Override RER thinking budget (default 5000)
+- `GEMINI_RER_MAX_OUTPUT_TOKENS` — Override RER max output tokens (default 4096)
+- `GEMINI_COA_THINKING_BUDGET` / `GEMINI_COA_MAX_OUTPUT_TOKENS` — COA execution overrides
+- `GEMINI_SUPERVISOR_THINKING_BUDGET` / `GEMINI_SUPERVISOR_MAX_OUTPUT_TOKENS` — Command Center execution overrides
+- `GEMINI_PIPELINE_MAX_CONCURRENCY` — Max concurrent Gemini RER tab calls (default 2)
+- `ZERO_PAID_SPEND_MODE` — `true` disables new paid-provider calls platform-wide
+- `BUDGET_KILL_SWITCH` — `true` administratively disables paid-provider calls
+- `MONTHLY_BUDGET_CEILING_MICROS` — Monthly paid ceiling in integer micros (1 USD = 1,000,000 micros)
+- `PRICING_MAX_AGE_DAYS` — Pricing-catalog staleness threshold
 
 ## Setting up Google Sign-In
 

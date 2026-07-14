@@ -7,13 +7,14 @@ import {
   type RerAgentOutput, type InsertRerAgentOutput,
   type Mission, type InsertMission,
   type Task, type InsertTask,
-  type MemoryEntry, type InsertMemoryEntry,
+  type MemoryEntry, type InsertMemoryEntry, type EvidenceCapture, type InsertEvidenceCapture,
   users, rooms, members, chatMessages, roomStates, rerTasks, rerAgentOutputs,
-  missions, tasks, memoryEntries,
+  missions, tasks, memoryEntries, evidenceCaptures,
 } from "@shared/schema";
 import { randomUUID, createHash } from "crypto";
 import { db } from "./db";
 import { eq, and, asc, desc } from "drizzle-orm";
+import { budgetLedger } from "./core/budgetLedger";
 
 // ── User types — persisted in Postgres so accounts survive restarts/redeploys ─
 export interface AppUser {
@@ -70,12 +71,16 @@ export interface IStorage {
   setMemory(input: InsertMemoryEntry): Promise<MemoryEntry>;
   getMemory(roomId: string, scope: string, scopeId?: string, key?: string): Promise<MemoryEntry[]>;
   deleteMemory(roomId: string, scope: string, scopeId?: string, key?: string): Promise<void>;
+  createEvidenceCapture(input: InsertEvidenceCapture): Promise<EvidenceCapture>;
+  listEvidenceCaptures(roomId: string): Promise<EvidenceCapture[]>;
+  getEvidenceCapture(id: string): Promise<EvidenceCapture | undefined>;
+  deleteEvidenceCapture(id: string): Promise<void>;
 }
 
 // ── Postgres-backed storage ───────────────────────────────────────────────────
 // Rooms, members, chat, workspace (room) state, and the RER pipeline are all
 // persisted so the workstation survives refresh, reconnect, and redeploy.
-// (Daily rate-limit counters remain in-memory — they reset every day anyway.)
+// (Daily usage counters and budget ledgers are persisted in Postgres.)
 export class DatabaseStorage implements IStorage {
   // ── User auth ───────────────────────────────────────────────────────────────
   async createUser(email: string, displayName: string, password: string) {
@@ -382,27 +387,64 @@ export class DatabaseStorage implements IStorage {
     await db.delete(memoryEntries).where(and(...conds));
   }
 
-  // ── Rate limiting per user (daily, in-memory — resets each day) ──────────────
-  private usageCounters = new Map<string, { date: string; geminiCalls: number; rerLaunches: number; coaCalls: number; resetAt: string }>();
-
   async getUsage(uid: string) {
-    const today = new Date().toISOString().slice(0, 10);
-    const key = `${uid}:${today}`;
-    let u = this.usageCounters.get(key);
-    if (!u || u.resetAt !== today) {
-      u = { date: today, geminiCalls: 0, rerLaunches: 0, coaCalls: 0, resetAt: today };
-      this.usageCounters.set(key, u);
-    }
-    return u;
+    const snapshot = await budgetLedger.getUsageForDate(uid);
+    return {
+      date: snapshot.date,
+      geminiCalls: snapshot.geminiCalls,
+      rerLaunches: snapshot.rerLaunches,
+      coaCalls: snapshot.coaCalls,
+      serpSearches: snapshot.serpSearches,
+      urlFetches: snapshot.urlFetches,
+      estimatedInputTokens: snapshot.estimatedInputTokens,
+      estimatedOutputTokens: snapshot.estimatedOutputTokens,
+      estimatedThinkingTokens: snapshot.estimatedThinkingTokens,
+      actualInputTokens: snapshot.actualInputTokens,
+      actualOutputTokens: snapshot.actualOutputTokens,
+      actualThinkingTokens: snapshot.actualThinkingTokens,
+      resetAt: snapshot.date,
+    };
   }
 
-  async incrementUsage(uid: string, field: "geminiCalls" | "rerLaunches" | "coaCalls") {
-    const today = new Date().toISOString().slice(0, 10);
-    const key = `${uid}:${today}`;
-    const u = await this.getUsage(uid);
-    u[field] += 1;
-    this.usageCounters.set(key, u);
-    return u;
+  async incrementUsage(
+    uid: string,
+    field: "geminiCalls" | "rerLaunches" | "coaCalls" | "serpSearches" | "urlFetches"
+  ) {
+    await budgetLedger.incrementUsage(uid, { counter: field });
+    return this.getUsage(uid);
+  }
+
+
+
+  // ── Evidence captures ─────────────────────────────────────────────────────
+  async createEvidenceCapture(input: InsertEvidenceCapture): Promise<EvidenceCapture> {
+    const [ev] = await db.insert(evidenceCaptures).values({
+      roomId: input.roomId,
+      missionId: input.missionId ?? null,
+      panelId: input.panelId,
+      sourceUrl: input.sourceUrl,
+      captureTimestamp: input.captureTimestamp,
+      title: input.title ?? null,
+      label: input.label ?? null,
+      contentExcerpt: input.contentExcerpt ?? null,
+      contentHash: input.contentHash ?? null,
+      screenshotRef: input.screenshotRef ?? null,
+      createdByUid: input.createdByUid,
+    }).returning();
+    return ev;
+  }
+
+  async listEvidenceCaptures(roomId: string): Promise<EvidenceCapture[]> {
+    return db.select().from(evidenceCaptures).where(eq(evidenceCaptures.roomId, roomId)).orderBy(desc(evidenceCaptures.createdAt));
+  }
+
+  async getEvidenceCapture(id: string): Promise<EvidenceCapture | undefined> {
+    const [ev] = await db.select().from(evidenceCaptures).where(eq(evidenceCaptures.id, id));
+    return ev;
+  }
+
+  async deleteEvidenceCapture(id: string): Promise<void> {
+    await db.delete(evidenceCaptures).where(eq(evidenceCaptures.id, id));
   }
 
   // ── Commercial tier ─────────────────────────────────────────────────────────

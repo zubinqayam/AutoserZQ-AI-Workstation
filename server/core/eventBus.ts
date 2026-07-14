@@ -17,7 +17,17 @@ export type ZQEventType =
   | "task.failed"
   | "workspace.updated"
   | "evidence.captured"
-  | "browser.event";
+  | "evidence.deleted"
+  | "browser.event"
+  | "budget.usage"
+  | "budget.reserved"
+  | "budget.settled"
+  | "budget.released"
+  | "budget.soft_threshold"
+  | "budget.hard_threshold"
+  | "budget.exhausted"
+  | "budget.zero_spend_enabled"
+  | "budget.zero_spend_disabled";
 
 export interface ZQEvent<T = any> {
   type: ZQEventType;

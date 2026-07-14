@@ -8,8 +8,9 @@ import {
   callGeminiWithRetry,
   pingGemini,
 } from "../server/gemini";
-import { sanitizeRerText, rerStartSchema, verifyCheckpointChain } from "../server/routes";
-import { pingDb } from "../server/db";
+import { sanitizeRerText, rerStartSchema, verifyCheckpointChain } from "../server/rerValidation";
+import { validateOutboundUrl } from "../server/core/urlSafety";
+import { getExecutionConfig } from "../server/core/executionConfig";
 
 let passed = 0;
 let failed = 0;
@@ -28,11 +29,20 @@ function check(name: string, fn: () => void | Promise<void>) {
 }
 
 async function main() {
+  let pingDb: (() => Promise<boolean>) | null = null;
+  if (process.env.DATABASE_URL) {
+    ({ pingDb } = await import("../server/db"));
+  }
+
   // ── 1. Health check ──────────────────────────────────────────────────────
-  await check("pingDb() resolves boolean", async () => {
-    const ok = await pingDb();
-    assert.strictEqual(typeof ok, "boolean");
-  });
+  if (pingDb) {
+    await check("pingDb() resolves boolean", async () => {
+      const ok = await pingDb!();
+      assert.strictEqual(typeof ok, "boolean");
+    });
+  } else {
+    console.log("SKIP: pingDb() resolves boolean (DATABASE_URL not set)");
+  }
 
   await check("pingGemini() resolves boolean and respects timeout", async () => {
     const ok = await pingGemini(3000);
@@ -53,19 +63,23 @@ async function main() {
   // Give the server's background monitor a moment to complete its first probe.
   await new Promise((r) => setTimeout(r, 1500));
 
-  await check("GET /api/health returns expected shape within 200ms (requires running server on PORT/5000)", async () => {
-    const port = process.env.PORT || "5000";
-    const start = Date.now();
-    const res = await fetch(`http://localhost:${port}/api/health`);
-    const elapsed = Date.now() - start;
-    const body = await res.json();
-    assert.strictEqual(res.status, 200);
-    assert.ok(["ok", "degraded", "down"].includes(body.status));
-    assert.strictEqual(typeof body.checks.db, "boolean");
-    assert.strictEqual(typeof body.checks.gemini, "boolean");
-    assert.strictEqual(typeof body.checks.uptime, "number");
-    assert.ok(elapsed < 200, `expected /api/health to respond in <200ms, took ${elapsed}ms`);
-  });
+  if (process.env.RUN_HEALTH_ENDPOINT_TEST === "true") {
+    await check("GET /api/health returns expected shape within 200ms (requires running server on PORT/5000)", async () => {
+      const port = process.env.PORT || "5000";
+      const start = Date.now();
+      const res = await fetch(`http://localhost:${port}/api/health`);
+      const elapsed = Date.now() - start;
+      const body = await res.json();
+      assert.strictEqual(res.status, 200);
+      assert.ok(["ok", "degraded", "down"].includes(body.status));
+      assert.strictEqual(typeof body.checks.db, "boolean");
+      assert.strictEqual(typeof body.checks.gemini, "boolean");
+      assert.strictEqual(typeof body.checks.uptime, "number");
+      assert.ok(elapsed < 200, `expected /api/health to respond in <200ms, took ${elapsed}ms`);
+    });
+  } else {
+    console.log("SKIP: GET /api/health test (RUN_HEALTH_ENDPOINT_TEST not true)");
+  }
 
   // ── 2. Retry/backoff ─────────────────────────────────────────────────────
   await check("isTransientGeminiError classifies 429/503 as transient", () => {
@@ -211,6 +225,48 @@ async function main() {
     const { lastGoodIndex, intact } = verifyCheckpointChain(outputs);
     assert.strictEqual(intact, false);
     assert.strictEqual(lastGoodIndex, -1);
+  });
+
+  // ── 5. URL fetch hardening + execution config ─────────────────────────────
+  await check("validateOutboundUrl rejects malformed URLs", async () => {
+    await assert.rejects(validateOutboundUrl("not-a-url"));
+  });
+
+  await check("validateOutboundUrl rejects localhost and loopback", async () => {
+    await assert.rejects(validateOutboundUrl("http://localhost:8080"));
+    await assert.rejects(validateOutboundUrl("http://127.0.0.1"));
+    await assert.rejects(validateOutboundUrl("http://[::1]"));
+    await assert.rejects(validateOutboundUrl("http://0.0.0.0"));
+  });
+
+  await check("validateOutboundUrl rejects private and metadata addresses", async () => {
+    await assert.rejects(validateOutboundUrl("http://10.0.0.1"));
+    await assert.rejects(validateOutboundUrl("http://192.168.1.1"));
+    await assert.rejects(validateOutboundUrl("http://169.254.169.254/latest/meta-data"));
+    await assert.rejects(validateOutboundUrl("http://172.16.0.1"));
+    await assert.rejects(validateOutboundUrl("http://2130706433"));
+    await assert.rejects(validateOutboundUrl("http://0x7f000001"));
+    await assert.rejects(validateOutboundUrl("http://0177.0.0.1"));
+    await assert.rejects(validateOutboundUrl("http://user:pass@example.com"));
+  });
+
+  await check("execution config defaults RER thinking budget to 5000 and output to 4096", () => {
+    delete process.env.GEMINI_RER_THINKING_BUDGET;
+    delete process.env.GEMINI_RER_MAX_OUTPUT_TOKENS;
+    process.env.EXECUTION_PROFILE = "STANDARD";
+    const cfg = getExecutionConfig();
+    assert.strictEqual(cfg.rerTabCycle.thinkingBudget, 5000);
+    assert.strictEqual(cfg.rerTabCycle.maxOutputTokens, 4096);
+  });
+
+  await check("execution config allows typed env overrides", () => {
+    process.env.GEMINI_RER_THINKING_BUDGET = "6200";
+    process.env.GEMINI_RER_MAX_OUTPUT_TOKENS = "3000";
+    const cfg = getExecutionConfig();
+    assert.strictEqual(cfg.rerTabCycle.thinkingBudget, 6200);
+    assert.strictEqual(cfg.rerTabCycle.maxOutputTokens, 3000);
+    delete process.env.GEMINI_RER_THINKING_BUDGET;
+    delete process.env.GEMINI_RER_MAX_OUTPUT_TOKENS;
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

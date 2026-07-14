@@ -4,77 +4,21 @@ import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { runTabCycle, generateResearchResponse, generateCOAResponse, generateCOAMultiAgentResponse, computeChecksum, getCachedGeminiHealth, startGeminiHealthMonitor } from "./gemini";
 import { z } from "zod";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { TAB_ROLES, insertRoomSchema } from "@shared/schema";
 import { eventBus } from "./core/eventBus";
 import { missionManager } from "./core/missionManager";
 import { getWorkspaceSnapshot, buildAgentContext } from "./core/workspaceEngine";
 import { pingDb } from "./db";
+import { quotaEnforcer } from "./core/quotaEnforcer";
+import { budgetConfig } from "./core/budgetConfig";
+import { budgetLedger } from "./core/budgetLedger";
+import { fetchWithRedirectValidation, readResponseWithLimit, validateOutboundUrl } from "./core/urlSafety";
+import { rerStartSchema, sanitizeChatMessages, sanitizeRerText, verifyCheckpointChain } from "./rerValidation";
 
 interface WSClient extends WebSocket {
   roomId?: string;
   uid?: string;
-}
-
-// Strip control characters (\x00-\x1F, \x7F-\x9F), zero-width characters
-// (\u200B-\u200F, \uFEFF), and angle brackets (to neutralize naive HTML/tag
-// injection) from user-supplied RER input, then cap length and require
-// non-empty content. Applied to both the research topic and mode.
-export function sanitizeRerText(raw: string): string {
-  return raw
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1F\x7F-\x9F]/g, "")
-    .replace(/[\u200B-\u200F\uFEFF]/g, "")
-    .replace(/[<>]/g, "")
-    .trim()
-    .slice(0, 500);
-}
-
-// Sanitize an array of chat-style messages ({ role, content }) using the
-// same rules as sanitizeRerText, dropping any entries that end up empty or
-// malformed. Used for Command Center and COA chat input before it reaches
-// Gemini.
-export function sanitizeChatMessages<T extends { role?: unknown; content?: unknown }>(
-  messages: T[]
-): T[] {
-  return messages
-    .filter((m) => m && typeof m.content === "string")
-    .map((m) => ({ ...m, content: sanitizeRerText(m.content as string) }))
-    .filter((m) => (m.content as string).length > 0) as T[];
-}
-
-export const rerStartSchema = z.object({
-  roomId: z.string().min(1, "roomId required"),
-  topic: z
-    .string()
-    .min(1, "topic required")
-    .transform(sanitizeRerText)
-    .refine((v) => v.length > 0, { message: "topic must not be empty after sanitization" }),
-  mode: z.enum(["sequential", "parallel"]).default("sequential"),
-});
-
-interface CheckpointLike {
-  tabIndex: number;
-  status: string;
-  output: string | null;
-  checkpointHash: string | null;
-}
-
-// Walk a sequential RER task's tab outputs in order and verify each "done"
-// checkpoint's stored hash matches a fresh hash of its stored output. A
-// missing or mismatched hash breaks the chain — we never trust/resume on top
-// of unverifiable state. Returns the last verified tab index (-1 if none) and
-// whether the chain is intact.
-export function verifyCheckpointChain(outputs: CheckpointLike[]): { lastGoodIndex: number; intact: boolean } {
-  let lastGoodIndex = -1;
-  for (const o of outputs) {
-    if (o.status !== "done" || !o.output) break;
-    if (!o.checkpointHash || computeChecksum(o.output) !== o.checkpointHash) {
-      return { lastGoodIndex, intact: false };
-    }
-    lastGoodIndex = o.tabIndex;
-  }
-  return { lastGoodIndex, intact: true };
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -97,6 +41,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   eventBus.on("*", (evt) => {
     broadcastToRoom(evt.roomId, { type: "event", event: { type: evt.type, payload: evt.payload, at: evt.at } });
   });
+  if (budgetConfig.zeroPaidSpendMode) {
+    eventBus.publish("budget.zero_spend_enabled", "global", { enabled: true });
+  } else {
+    eventBus.publish("budget.zero_spend_disabled", "global", { enabled: false });
+  }
 
   const wsSchema = z.union([
     z.object({ type: z.literal("join"), roomId: z.string(), uid: z.string(), displayName: z.string() }),
@@ -233,19 +182,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const geminiCached = getCachedGeminiHealth();
     const geminiOk = geminiCached ?? Boolean(process.env.GEMINI_API_KEY);
     const status = dbOk && geminiOk ? "ok" : dbOk || geminiOk ? "degraded" : "down";
+    const budgetStatus = budgetConfig.emergencyKillSwitch || budgetConfig.zeroPaidSpendMode
+      ? "disabled"
+      : "normal";
     res.json({
       status,
       checks: { db: dbOk, gemini: geminiOk, uptime: process.uptime() },
+      budgetStatus,
       responseTimeMs: Date.now() - startedAt,
     });
   });
 
   // ──── Cost protection middleware ──────────────────────────────────────────────
-  const LIMITS: Record<string, Record<string, number>> = {
-    free:       { geminiPerDay: 20,  rerPerDay: 3,  coaPerDay: 15,  },
-    pro:        { geminiPerDay: 100, rerPerDay: 15, coaPerDay: 50,  },
-    enterprise: { geminiPerDay: 500, rerPerDay: 50, coaPerDay: 200, },
-  };
+  const LIMITS = budgetConfig.tiers;
 
   const requireAuth = async (req: any, res: any, next: any) => {
     const uid = req.headers["x-uid"] as string;
@@ -256,25 +205,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
     next();
   };
 
-  const checkRateLimit = (field: "geminiCalls" | "rerLaunches" | "coaCalls") => async (req: any, res: any, next: any) => {
+  const requireRoomMember = async (roomId: string, uid: string) => {
+    const room = await storage.getRoom(roomId);
+    if (!room) return false;
+    if (room.ownerUid === uid) return true;
+    return Boolean(await storage.getMember(roomId, uid));
+  };
+
+  const checkRateLimit = (
+    field: "geminiCalls" | "rerLaunches" | "coaCalls" | "serpSearches" | "urlFetches",
+    opts: { increment?: "before" | "after" } = { increment: "before" }
+  ) => async (req: any, res: any, next: any) => {
     const uid = req.headers["x-uid"] as string;
     if (!uid) return res.status(401).json({ error: "Login required", code: "AUTH_REQUIRED" });
+    const tier = await getValidatedTier(uid);
     const usage = await storage.getUsage(uid);
-    const tier = await storage.getTier(uid);
-    const limitKey = field === "geminiCalls" ? "geminiPerDay" : field === "rerLaunches" ? "rerPerDay" : "coaPerDay";
-    const limit = LIMITS[tier]?.[limitKey] ?? 20;
-    const used = usage[field];
-    if (used >= limit) {
-      return res.status(429).json({
-        error: `Daily ${field} limit reached (${used}/${limit}). Resets tomorrow.`,
-        code: "RATE_LIMITED",
+    const limit = LIMITS[tier][field];
+    const used = usage[field] ?? 0;
+    const decision = await quotaEnforcer.evaluate(uid, tier, field);
+    if (!decision.allowed) {
+      if (decision.retryAfterSeconds) res.setHeader("Retry-After", String(decision.retryAfterSeconds));
+      return res.status(decision.statusCode || 429).json({
+        error: decision.message || "Rate limited",
+        code: decision.code || "RATE_LIMITED",
         tier,
         limit,
         used,
         upgradeUrl: "/upgrade",
       });
     }
-    await storage.incrementUsage(uid, field);
+    if ((opts.increment || "before") === "before") {
+      await storage.incrementUsage(uid, field);
+      eventBus.publish("budget.usage", "global", { uid, field, mode: "pre" });
+    } else {
+      res.locals.postUsageIncrement = async () => {
+        await storage.incrementUsage(uid, field);
+        eventBus.publish("budget.usage", "global", { uid, field, mode: "post" });
+      };
+    }
     next();
   };
 
@@ -285,7 +253,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
       const sanitized = sanitizeChatMessages(messages);
       if (sanitized.length === 0) return res.status(400).json({ error: "messages must not be empty after sanitization" });
-      res.json({ text: await generateResearchResponse(sanitized) });
+      res.json({ text: await generateResearchResponse(sanitized, (req as any).user.id) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "AI unavailable" });
     }
@@ -296,8 +264,100 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const uid = req.headers["x-uid"] as string;
     if (!uid) return res.status(401).json({ error: "Not authenticated" });
     const usage = await storage.getUsage(uid);
-    const tier = await storage.getTier(uid);
-    res.json({ usage, tier, limits: LIMITS[tier] });
+    const tier = await getValidatedTier(uid);
+    const totals = await budgetLedger.getBudgetTotals(uid);
+    const monthlyCeiling = budgetConfig.monthlyCeilingMicros;
+    const utilization = monthlyCeiling > BigInt(0)
+      ? Number(((totals.monthlySpentMicros + totals.activeReservationMicros) * BigInt(10000)) / monthlyCeiling) / 100
+      : 0;
+    const legacyLimits = {
+      geminiPerDay: LIMITS[tier].geminiCalls,
+      rerPerDay: LIMITS[tier].rerLaunches,
+      coaPerDay: LIMITS[tier].coaCalls,
+    };
+    res.json({
+      usage,
+      tier,
+      limits: legacyLimits,
+      operationLimits: LIMITS[tier],
+      dailyTotals: totals.daily,
+      monthlyTotals: {
+        spentMicros: totals.monthlySpentMicros.toString(),
+        activeReservationMicros: totals.activeReservationMicros.toString(),
+      },
+      tokenTotals: {
+        estimatedInputTokens: usage.estimatedInputTokens ?? 0,
+        estimatedOutputTokens: usage.estimatedOutputTokens ?? 0,
+        estimatedThinkingTokens: usage.estimatedThinkingTokens ?? 0,
+        actualInputTokens: usage.actualInputTokens ?? 0,
+        actualOutputTokens: usage.actualOutputTokens ?? 0,
+        actualThinkingTokens: usage.actualThinkingTokens ?? 0,
+      },
+      budgetUtilizationPercent: utilization,
+      zeroPaidSpendMode: budgetConfig.zeroPaidSpendMode,
+    });
+  });
+
+
+
+  // Conference Room evidence API. Iframe-tier captures persist truthful metadata
+  // only; cross-origin page content/screenshots are not fabricated.
+  const evidenceBodySchema = z.object({
+    missionId: z.string().optional().nullable(),
+    panelId: z.string().min(1).max(32),
+    sourceUrl: z.string().url(),
+    title: z.string().max(300).optional().nullable(),
+    label: z.string().max(120).optional().nullable(),
+    contentExcerpt: z.string().max(4000).optional().nullable(),
+    screenshotRef: z.string().max(1000).optional().nullable(),
+  });
+
+  app.get("/api/room/:roomId/evidence", requireAuth, async (req: any, res) => {
+    const uid = req.user.id;
+    if (!(await requireRoomMember(req.params.roomId, uid))) return res.status(403).json({ error: "Room access denied" });
+    res.json(await storage.listEvidenceCaptures(req.params.roomId));
+  });
+
+  app.post("/api/room/:roomId/evidence", requireAuth, async (req: any, res) => {
+    const uid = req.user.id;
+    if (!(await requireRoomMember(req.params.roomId, uid))) return res.status(403).json({ error: "Room access denied" });
+    const parsed = evidenceBodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0]?.message || "Invalid evidence" });
+    const contentHash = parsed.data.contentExcerpt
+      ? createHash("sha256").update(parsed.data.contentExcerpt).digest("hex")
+      : null;
+    const capture = await storage.createEvidenceCapture({
+      roomId: req.params.roomId,
+      missionId: parsed.data.missionId ?? null,
+      panelId: parsed.data.panelId,
+      sourceUrl: parsed.data.sourceUrl,
+      captureTimestamp: new Date(),
+      title: parsed.data.title ?? null,
+      label: parsed.data.label ?? null,
+      contentExcerpt: parsed.data.contentExcerpt ?? null,
+      contentHash,
+      screenshotRef: parsed.data.screenshotRef ?? null,
+      createdByUid: uid,
+    });
+    eventBus.publish("evidence.captured", req.params.roomId, { id: capture.id, uid, panelId: capture.panelId });
+    res.status(201).json(capture);
+  });
+
+  app.get("/api/evidence/:id", requireAuth, async (req: any, res) => {
+    const capture = await storage.getEvidenceCapture(req.params.id);
+    if (!capture) return res.status(404).json({ error: "Evidence not found" });
+    if (!(await requireRoomMember(capture.roomId, req.user.id))) return res.status(403).json({ error: "Evidence access denied" });
+    res.json(capture);
+  });
+
+  app.delete("/api/evidence/:id", requireAuth, async (req: any, res) => {
+    const capture = await storage.getEvidenceCapture(req.params.id);
+    if (!capture) return res.status(404).json({ error: "Evidence not found" });
+    const room = await storage.getRoom(capture.roomId);
+    if (capture.createdByUid !== req.user.id && room?.ownerUid !== req.user.id) return res.status(403).json({ error: "Evidence delete denied" });
+    await storage.deleteEvidenceCapture(req.params.id);
+    eventBus.publish("evidence.deleted", capture.roomId, { id: capture.id, uid: req.user.id });
+    res.status(204).end();
   });
 
   // ZQ COA (Cognitive Overlay Agent) chat
@@ -480,7 +540,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const sanitized = sanitizeChatMessages(messages);
       if (sanitized.length === 0) return res.status(400).json({ error: "messages must not be empty after sanitization" });
       const context = await mergeAgentContext(roomId, workspaceContext);
-      res.json({ text: await generateCOAResponse(sanitized, context) });
+      res.json({ text: await generateCOAResponse(sanitized, context, (req as any).user.id) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "COA unavailable" });
     }
@@ -495,7 +555,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (sanitizedMessage.length === 0) return res.status(400).json({ error: "message must not be empty after sanitization" });
       const sanitizedHistory = sanitizeChatMessages(Array.isArray(history) ? history : []);
       const ctx = await mergeAgentContext(roomId, workspaceContext);
-      const responses = await generateCOAMultiAgentResponse(sanitizedMessage, sanitizedHistory, ctx);
+      const responses = await generateCOAMultiAgentResponse(sanitizedMessage, sanitizedHistory, ctx, (req as any).user.id);
       res.json({ responses });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Multi-agent unavailable" });
@@ -564,9 +624,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Run pipeline async
       if (mode === "sequential") {
-        runSequentialPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast);
+        runSequentialPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast, (req as any).user.id);
       } else {
-        runParallelPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast);
+        runParallelPipeline(taskId, roomId, topic, agentOutputs.map(o => o.id), broadcast, (req as any).user.id);
       }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -635,13 +695,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // key only — never exposed to the client. Normalizes organic_results into
   // a small, stable shape so the frontend doesn't need to know SerpAPI's
   // response format.
-  app.post("/api/serp/search", async (req, res) => {
+  app.post("/api/serp/search", requireAuth, checkRateLimit("serpSearches", { increment: "after" }), async (req, res) => {
     const apiKey = process.env.SERPAPI_KEY;
     if (!apiKey) {
       return res.status(501).json({ error: "SerpAPI is not configured. Set SERPAPI_KEY to enable search." });
     }
+    const uid = (req as any).user?.id as string;
+    let reservationId: string | undefined;
+    const reserve = await budgetLedger.reserveBudget({
+      uid,
+      provider: "serpapi",
+      operationType: "search",
+      estimatedMicros: BigInt(0),
+      monthlyCeilingMicros: budgetConfig.monthlyCeilingMicros,
+    });
+    if (!reserve.allowed) {
+      eventBus.publish("budget.exhausted", "global", { uid, provider: "serpapi" });
+      return res.status(429).json({ error: reserve.reason || "Budget exhausted", code: "BUDGET_EXHAUSTED" });
+    }
+    reservationId = reserve.reservationId;
+    eventBus.publish("budget.reserved", "global", { uid, provider: "serpapi", reservationId });
     const { q, location, google_domain, hl, gl } = req.body || {};
     if (!q || typeof q !== "string" || !q.trim()) {
+      if (reservationId) await budgetLedger.releaseReservation(reservationId, "invalid_request");
       return res.status(400).json({ error: "q (search query) is required" });
     }
     try {
@@ -667,9 +743,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const data = await response.json().catch(() => null);
       if (!response.ok || !data) {
         const message = (data && (data as any).error) || `SerpAPI request failed (HTTP ${response.status})`;
+        if (reservationId) await budgetLedger.releaseReservation(reservationId, message);
         return res.status(502).json({ error: message });
       }
       if ((data as any).error) {
+        if (reservationId) await budgetLedger.releaseReservation(reservationId, (data as any).error);
         return res.status(502).json({ error: (data as any).error });
       }
 
@@ -683,12 +761,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         favicon: typeof r.favicon === "string" ? r.favicon : null,
       })).filter((r: any) => r.title && r.link);
 
+      if (reservationId) {
+        await budgetLedger.settleReservation(reservationId, BigInt(0));
+        eventBus.publish("budget.settled", "global", { uid, provider: "serpapi", reservationId });
+      }
+      if (typeof res.locals.postUsageIncrement === "function") {
+        await res.locals.postUsageIncrement();
+      }
+
       res.json({
         results,
         totalResults: (data as any).search_information?.total_results ?? null,
         searchParameters: (data as any).search_parameters ?? null,
       });
     } catch (err: any) {
+      if (reservationId) {
+        await budgetLedger.releaseReservation(reservationId, err?.message || "search_failed");
+        eventBus.publish("budget.released", "global", { uid, provider: "serpapi", reservationId });
+      }
       if (err?.name === "AbortError") {
         return res.status(504).json({ error: "SerpAPI request timed out" });
       }
@@ -697,20 +787,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ── URL Content Fetcher (moved inside registerRoutes) ──────────────────────
-  app.post("/api/fetch-url", async (req, res) => {
+  app.post("/api/fetch-url", requireAuth, checkRateLimit("urlFetches", { increment: "after" }), async (req, res) => {
     const { url } = req.body;
     if (!url || typeof url !== "string") return res.status(400).json({ error: "URL required" });
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: { "User-Agent": "ZQ-Workstation/1.0 (research reader)" },
+      const targetUrl = await validateOutboundUrl(url);
+      const { response, finalUrl } = await fetchWithRedirectValidation(targetUrl, {
+        timeoutMs: 10000,
+        maxBytes: 1024 * 1024,
+        userAgent: "ZQ-Workstation/1.0 (research reader)",
       });
-      clearTimeout(timeout);
       if (!response.ok) return res.status(400).json({ error: `HTTP ${response.status}` });
       const contentType = response.headers.get("content-type") || "";
-      const rawText = await response.text();
+      const rawText = await readResponseWithLimit(response, 1024 * 1024);
       let cleaned: string;
       if (contentType.includes("html")) {
         cleaned = rawText
@@ -723,9 +812,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         cleaned = rawText.slice(0, 8000);
       }
-      res.json({ content: cleaned, url, contentType });
+      if (typeof res.locals.postUsageIncrement === "function") {
+        await res.locals.postUsageIncrement();
+      }
+      res.json({ content: cleaned, url: finalUrl.toString(), contentType });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || "Failed to fetch URL" });
+      if (err?.name === "AbortError") return res.status(504).json({ error: "URL fetch timed out" });
+      const msg = err?.message || "Failed to fetch URL";
+      const isValidation = /not allowed|Malformed URL|Only http\/https|Hostname is required|blocked|Too many redirects/i.test(msg);
+      res.status(isValidation ? 400 : 500).json({ error: msg });
     }
   });
 
@@ -742,6 +837,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   startGeminiHealthMonitor();
 
   return httpServer;
+
+  async function getValidatedTier(uid: string): Promise<"free" | "pro" | "enterprise"> {
+    const tier = await storage.getTier(uid);
+    if (tier === "free" || tier === "pro" || tier === "enterprise") return tier;
+    return "free";
+  }
 
   async function resumeInterruptedRerTasks() {
     const running = await storage.getRunningRerTasks();
@@ -782,9 +883,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 // ─── SEQUENTIAL: Tab1 → Tab2 → Tab3 → Tab4, each gets previous tab's full report ───
 async function runSequentialPipeline(
   taskId: string, roomId: string, topic: string,
-  outputIds: string[], broadcast: (m: any) => void
+  outputIds: string[], broadcast: (m: any) => void, uid?: string
 ) {
-  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, 0, null, broadcast);
+  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, 0, null, broadcast, uid);
 }
 
 // Resume a sequential RER pipeline after a crash. `startIndex` is the tab
@@ -793,15 +894,15 @@ async function runSequentialPipeline(
 async function resumeSequentialPipeline(
   taskId: string, roomId: string, topic: string,
   outputIds: string[], startIndex: number, previousReportSeed: string | null,
-  broadcast: (m: any) => void
+  broadcast: (m: any) => void, uid?: string
 ) {
-  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, startIndex, previousReportSeed, broadcast);
+  return sequentialPipelineLoop(taskId, roomId, topic, outputIds, startIndex, previousReportSeed, broadcast, uid);
 }
 
 async function sequentialPipelineLoop(
   taskId: string, roomId: string, topic: string,
   outputIds: string[], startIndex: number, previousReportSeed: string | null,
-  broadcast: (m: any) => void
+  broadcast: (m: any) => void, uid?: string
 ) {
   let previousReport: string | null = previousReportSeed;
 
@@ -820,7 +921,7 @@ async function sequentialPipelineLoop(
 
     try {
       // Each tab gets the PREVIOUS tab's full report as input
-      const result = await runTabCycle(tabNumber, topic, previousReport, taskId);
+      const result = await runTabCycle(tabNumber, topic, previousReport, taskId, uid);
 
       await storage.updateRerAgentOutput(outputId, { status: "done", output: result, checkpointHash: computeChecksum(result) });
       await storage.updateRerTask(taskId, { currentStep: i + 1 });
@@ -848,7 +949,7 @@ async function sequentialPipelineLoop(
 // ─── PARALLEL: All 4 tabs run simultaneously on topic, then do cross-enhancement ───
 async function runParallelPipeline(
   taskId: string, roomId: string, topic: string,
-  outputIds: string[], broadcast: (m: any) => void
+  outputIds: string[], broadcast: (m: any) => void, uid?: string
 ) {
   // Round 1: All tabs research the topic independently
   await Promise.all(outputIds.map(id =>
@@ -858,7 +959,7 @@ async function runParallelPipeline(
   await broadcastState(taskId, broadcast);
 
   const round1 = await Promise.allSettled(
-    [1, 2, 3, 4].map(tabNum => runTabCycle(tabNum, topic, null, taskId))
+    [1, 2, 3, 4].map(tabNum => runTabCycle(tabNum, topic, null, taskId, uid))
   );
 
   const round1Results: (string | null)[] = [];
@@ -892,7 +993,7 @@ async function runParallelPipeline(
 
   const round2 = await Promise.allSettled(
     [1, 2, 3, 4].map(tabNum =>
-      runTabCycle(tabNum, topic, combinedContext, taskId)
+      runTabCycle(tabNum, topic, combinedContext, taskId, uid)
     )
   );
 
@@ -915,4 +1016,3 @@ async function broadcastState(taskId: string, broadcast: (m: any) => void) {
   const agentOutputs = await storage.getTaskAgentOutputs(taskId);
   broadcast({ type: "rer-task-update", task: { ...task, agentOutputs } });
 }
-
